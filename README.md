@@ -1,74 +1,180 @@
-# VoiceOverXeaven (VOX) — MVP
+# VoiceOverXeaven (VOX)
 
-VoiceOverXeaven (VOX) is a desktop application for recording and processing voice-over sessions. The MVP included in this repository focuses on the core ADR workflow: timeline management, simulated recording with take lanes, preset-based processing, loudness normalisation, export, autosave rotation, and a dark UI derived from the original Unify project.
+Desktop app for recording and polishing voice-over: podcasts, audiobooks, and **ADR** (dubbing to picture). Built on PySide6 with a Logic Pro–inspired dark UI and the **Unify** DSP engine (scipy/numpy).
 
-## Getting started
+---
+
+## Quick start
 
 ```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# Linux/macOS: source .venv/bin/activate
+
 pip install -r requirements.txt
 python -m app.main
 ```
 
-### Launch flow
-1. Choose **Podcast** or **Audiobook** mode and a voice preset on the start screen.
-2. The main window provides a two-track timeline, transport and processing controls.
-3. Arm a track and record takes; takes appear as lanes and can be comped with the blade tool.
-4. Use the process panel to switch between *Monitor processed* and *Bypass* or to reset to the chosen preset.
-5. Markers (`M`) are stored inside the project database and restored on load.
+**Requirements:** Python 3.10+, **FFmpeg** on PATH (or in `third_party/ffmpeg/`) for MP3/FLAC export, video import, and some audio formats.
 
-## Key features
+---
 
-- **Magic vs. Advanced**: `app/dsp/magic.py` implements preset-based processing (Magic) and parameterised chains (Advanced) with loudness normalisation to −23 LUFS and true-peak limiting to −1 dBTP.
-- **Timeline and takes**: `app/timeline/model.py` maintains multitrack audio clips, markers, and take lanes that can be split with the blade tool.
-- **Recording**: `app/audio/engine.py` simulates takes, applies preroll beeps (3× beep + GO) and stores temporary WAV files for each take.
-- **Autosave**: `app/project/database.py` exposes `AutosaveManager`, creating a ring of at least five rolling autosaves.
-- **Export**: `app/export/audio.py` exports WAV/FLAC directly and MP3 through FFmpeg (CBR 128–320 kbps). Missing FFmpeg binaries raise a clear error instructing to drop them into `third_party/ffmpeg/` or add the executable to `PATH`.
-- **Hotkeys**: configurable via `app/settings/storage.py` with import/export using JSON files.
-
-## Exporting audio
-
-1. Select **File → Export…**.
-2. Choose WAV, FLAC or MP3. Loudness is normalised to −23 LUFS with true-peak constraint ≤ −1 dBTP.
-3. For MP3 export, ensure FFmpeg is available. Either add it to `PATH` or place the Windows binaries under `third_party/ffmpeg/` (`ffmpeg.exe`, `ffprobe.exe`).
-4. Export summaries include LUFS and true-peak readings from the loudness report.
-
-## Autosave configuration
-
-Options → Autosave lets you define interval (seconds) and number of slots (default 5). Autosaves are stored alongside the project in `autosaves/VOX-Autosave-*.voxproj`, and the last good autosave is offered on restart.
-
-## Hotkeys
-
-| Action                | Default |
-|-----------------------|---------|
-| Play / Pause          | Space   |
-| Record on selected    | *       |
-| Arm track             | R       |
-| Record armed tracks   | Shift+R |
-| Blade                 | B       |
-| Marker                | M       |
-| Toggle take-lanes     | L       |
-| Zoom in / out         | Z / X   |
-| Save / Save As        | Ctrl+S / Shift+S |
-| Open / New            | Ctrl+O / Ctrl+N |
-| Export / Import       | Ctrl+E / Ctrl+I |
-| Bypass processing     | Ctrl+B |
-| Monitor processed     | Ctrl+T |
-
-Hotkeys can be remapped in Options → Hotkeys. Use the import/export buttons to manage JSON profiles.
-
-## FFmpeg location
-
-Place FFmpeg binaries in `third_party/ffmpeg/` or set the `FFMPEG_PATH` environment variable. On Windows the application expects `ffmpeg.exe`. On other systems executable names without extension are accepted.
-
-## Testing
+## Interface at a glance
 
 ```
-pytest
+┌─────────────────────────────────────────────────────────────┐
+│  PICTURE LOCK  (ADR) — video preview + Import Video         │
+├─────────────────────────────────────────────────────────────┤
+│  Workflow hint bar (context tips for Podcast / ADR / …)     │
+├──────────────────────────────┬──────────────────────────────┤
+│  Arrange view                │  Channel Strip               │
+│  • track lanes + waveforms   │  • Match EQ                  │
+│  • playhead, markers         │  • Noise print               │
+│  • arm (R) on track header   │  • Voice isolation           │
+│                              │  • Deverb / gate             │
+├──────────────────────────────┴──────────────────────────────┤
+│  Transport: Stop ■  Play ▶  Record ●  Arm  Blade  Marker   │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## Licenses & credits
+| Area | What it does |
+|------|----------------|
+| **Start screen** | Pick workflow (Podcast / Audiobook / **ADR**) and voice preset |
+| **Arrange view** | Timeline with waveforms; click to move playhead; Ctrl+wheel = zoom |
+| **Channel Strip** | Processing: EQ match, noise print, isolation, dynamics |
+| **Transport bar** | Play, record, arm, blade, marker — mirrors hotkeys |
+| **Picture Lock** | Video preview (ADR); syncs with playhead; muted (audio on timeline track) |
 
-- **Unify project components** reused under permission: see `app/legacy/unify/`.
-- **FFmpeg** — GPL/LGPL, binaries not bundled; download from [ffmpeg.org](https://ffmpeg.org/).
-- **PyAV** placeholder modules included for future expansion.
-- **PySide6** — see licence; DSP routines in this MVP are implemented in pure Python for portability.
+---
+
+## Workflows
+
+### Podcast
+1. Select **Voice** track → **R** (arm) → **Record** (`*`) — ~5 s takes with preroll beeps  
+2. **Monitor Processed** to hear FX → **Export** (WAV/FLAC/MP3, −23 LUFS)
+
+### Audiobook
+- Longer takes (~8 s), noise gate and deverb enabled by default  
+- **Blade (B)** to split clips · **L** to cycle take lanes
+
+### ADR (dub to picture)
+1. Start screen → **ADR — dub to picture** (preset **ADR / Dialog**)  
+2. **File → Import Video** (or button in Picture Lock panel)  
+3. Audio from video lands on **Picture Lock** track; video shows above timeline  
+4. Move playhead to a **noise-only** moment → **Capture @ Playhead** (Channel Strip)  
+5. Select **Dialog** track → arm → record while watching the picture  
+6. **Options → Set Reference** for Match EQ (optional) · **Export**
+
+---
+
+## Audio I/O
+
+| Action | Formats |
+|--------|---------|
+| **Import audio** | WAV, FLAC, MP3, OGG, M4A, AAC (soundfile + FFmpeg fallback) |
+| **Import video** | MP4, MOV, MKV, AVI, WebM → extracts audio + preview |
+| **Export** | WAV, FLAC, MP3 (128–320 kbps CBR) |
+
+All exports: loudness **−23 LUFS**, true peak **≤ −1 dBTP**.
+
+---
+
+## Processing (Channel Strip)
+
+| Control | Purpose |
+|---------|---------|
+| **Match** | Spectral EQ toward reference file (*Options → Set Reference*) |
+| **Capture @ Playhead** | Grab ~0.5 s noise sample for profile denoise |
+| **Reduce / Floor / Sens** | Noise print strength, floor, sensitivity |
+| **Isolate** | Pull voice out of music/foley beds (heuristic, not AI) |
+| **Tilt / Deverb** | Timbre and late-reflection cleanup |
+| **Bypass FX** | Raw signal for comparison |
+
+Presets: Male/Female Low/High + **ADR / Dialog**.
+
+Settings persist in `~/.vox/settings.json` (hotkeys, noise profile, window geometry).
+
+---
+
+## Projects & autosave
+
+- Projects: `*.voxproj` (SQLite timeline + takes)  
+- **File → Save / Save As / Open**  
+- Autosave ring (default 5 slots, 300 s) — restore offered on launch  
+- Configure: **Options → Preferences**
+
+---
+
+## Hotkeys (defaults)
+
+| Action | Key |
+|--------|-----|
+| Play / Pause | Space |
+| Record | `*` |
+| Arm track | R |
+| Record all armed | Shift+R |
+| Blade | B |
+| Marker | M |
+| Cycle takes | L |
+| Zoom in / out | Z / X (also Ctrl+wheel) |
+| Save / Save As | Ctrl+S / Shift+S |
+| Open / New | Ctrl+O / Ctrl+N |
+| Import / Export | Ctrl+I / Ctrl+E |
+| Bypass / Monitor FX | Ctrl+B / Ctrl+T |
+
+Remap in **Options → Preferences → Hotkeys**.
+
+---
+
+## FFmpeg
+
+Place binaries in `third_party/ffmpeg/` or set `FFMPEG_PATH` / PATH.
+
+Windows: `ffmpeg.exe`, `ffprobe.exe`  
+Linux/macOS: `ffmpeg`, `ffprobe`
+
+---
+
+## Development
+
+```bash
+pytest          # 16 tests
+```
+
+Key modules:
+
+| Path | Role |
+|------|------|
+| `app/ui/` | Logic-style shell, arrange view, transport |
+| `app/dsp/pipeline.py` | Unify DSP + match EQ + noise print |
+| `app/dsp/separation.py` | Voice isolation |
+| `app/audio/` | Record, playback, media import |
+| `app/legacy/unify/` | Original UnifyAudio core |
+| `app/project/` | `.voxproj` database, autosave |
+
+---
+
+## Roadmap (ideas for next iterations)
+
+Not all implemented yet — candidates for future work:
+
+| Idea | Why |
+|------|-----|
+| **Waveform scrubbing in video panel** | Click video to set playhead |
+| **Loop between markers** | ADR line rehearsal |
+| **Punch-in record** | Overwrite a time range only |
+| **Take comp lanes in UI** | Visual A/B/C lanes instead of L-cycle only |
+| **Reference from Picture Lock** | One-click “match dialog on screen” |
+| **ML voice separation** (e.g. Demucs) | Stronger isolation than HPSS heuristic |
+| **Undo stack** | Blade / record mistakes |
+| **In-app quick tour** | First-run tooltips |
+
+If something feels unintuitive — feedback welcome; the hint bar and ADR video placeholder are first UX steps.
+
+---
+
+## Credits
+
+- **Unify Audio** — `app/legacy/unify/` (used with permission)  
+- **FFmpeg** — [ffmpeg.org](https://ffmpeg.org/) (GPL/LGPL, not bundled)  
+- **PySide6**, **numpy**, **scipy**, **soundfile**, **pyloudnorm**

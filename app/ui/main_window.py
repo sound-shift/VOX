@@ -22,6 +22,7 @@ from app.ui.palette import TRACK_COLORS
 from app.ui.process_panel import ProcessPanel
 from app.ui.transport_bar import TransportBar
 from app.ui.video_panel import VideoPanel
+from app.ui.workflow_tips import WorkflowTipsBar
 from app.video.session import VideoSession
 
 VIDEO_IMPORT_FILTER = "Video (*.mp4 *.mov *.mkv *.avi *.webm *.m4v);;All files (*.*)"
@@ -79,6 +80,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.process_panel.apply_workflow(self._workflow)
         labels = {"podcast": "Podcast", "audiobook": "Audiobook", "adr": "ADR"}
         self.setWindowTitle(f"VOX — VoiceOverXeaven ({labels.get(mode, mode)})")
+        self.tips_bar.set_mode(mode)
+        self.video_panel.set_adr_mode(mode == "adr")
         self._set_status(f"Workflow: {labels.get(mode, mode)}")
 
     def _build_ui(self) -> None:
@@ -88,7 +91,11 @@ class MainWindow(QtWidgets.QMainWindow):
         root.setSpacing(0)
 
         self.video_panel = VideoPanel(self)
+        self.video_panel.importRequested.connect(self.import_video)
         root.addWidget(self.video_panel)
+
+        self.tips_bar = WorkflowTipsBar(self)
+        root.addWidget(self.tips_bar)
 
         body = QtWidgets.QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
