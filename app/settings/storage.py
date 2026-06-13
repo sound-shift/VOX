@@ -9,7 +9,10 @@ from typing import Dict, MutableMapping
 DEFAULT_SETTINGS = {
     "audio": {"mp3_bitrate": 192},
     "autosave": {"interval_sec": 300, "slots": 5},
-    "processing": {"reference_file": None},
+    "processing": {
+        "reference_file": None,
+        "noise_profile": None,
+    },
     "ui": {"geometry": None},
 }
 

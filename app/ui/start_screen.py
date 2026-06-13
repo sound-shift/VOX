@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from PySide6 import QtCore, QtWidgets
 
 from app.dsp.presets import PRESETS
+from app.dsp.workflows import WORKFLOWS
 from app.ui import palette
 
 
@@ -20,7 +21,7 @@ class StartScreen(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle("VOX — VoiceOverXeaven")
         self.setModal(True)
-        self.resize(560, 420)
+        self.resize(580, 460)
         self.selection = StartSelection(mode="podcast", preset_key="male_low")
         self.setStyleSheet(f"background: {palette.BG_DEEP}; color: {palette.TEXT_PRIMARY};")
         self._build_ui()
@@ -41,6 +42,8 @@ class StartScreen(QtWidgets.QDialog):
         self.mode_combo = QtWidgets.QComboBox(self)
         self.mode_combo.addItem("Podcast — short takes", userData="podcast")
         self.mode_combo.addItem("Audiobook — long takes", userData="audiobook")
+        self.mode_combo.addItem("ADR — dub to picture", userData="adr")
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         layout.addWidget(self.mode_combo)
 
         layout.addWidget(self._section_label("Voice preset"))
@@ -49,11 +52,12 @@ class StartScreen(QtWidgets.QDialog):
             self.preset_combo.addItem(preset.name, userData=key)
         layout.addWidget(self.preset_combo)
 
-        layout.addStretch(1)
-        hint = QtWidgets.QLabel("Tip: arm track → Record. Ctrl+wheel zooms the arrange view.")
-        hint.setStyleSheet(f"color: {palette.TEXT_DIM}; font-size: 11px;")
-        layout.addWidget(hint)
+        self.hint = QtWidgets.QLabel("")
+        self.hint.setWordWrap(True)
+        self.hint.setStyleSheet(f"color: {palette.TEXT_DIM}; font-size: 11px;")
+        layout.addWidget(self.hint)
 
+        layout.addStretch(1)
         buttons = QtWidgets.QHBoxLayout()
         buttons.addStretch(1)
         cancel = QtWidgets.QPushButton("Cancel")
@@ -65,10 +69,33 @@ class StartScreen(QtWidgets.QDialog):
         buttons.addWidget(start)
         layout.addLayout(buttons)
 
+        self._on_mode_changed()
+
     def _section_label(self, text: str) -> QtWidgets.QLabel:
         label = QtWidgets.QLabel(text.upper())
         label.setObjectName("sectionTitle")
         return label
+
+    def _on_mode_changed(self) -> None:
+        mode = self.mode_combo.currentData()
+        if mode == "adr":
+            idx = self.preset_combo.findData("adr_dialog")
+            if idx >= 0:
+                self.preset_combo.setCurrentIndex(idx)
+            self.hint.setText(
+                "ADR: File → Import Video для picture lock. Дорожка Dialog — ваш дубляж. "
+                "Захватите шум (Capture Noise) на паузе между репликами."
+            )
+        elif mode == "audiobook":
+            self.hint.setText("Audiobook: длинные takes, gate и deverb включены по умолчанию.")
+        else:
+            self.hint.setText("Podcast: короткие takes. Ctrl+wheel — zoom таймлайна.")
+
+        workflow = WORKFLOWS.get(mode)
+        if workflow and mode != "adr":
+            idx = self.preset_combo.findData(workflow.preset_key)
+            if idx >= 0:
+                self.preset_combo.setCurrentIndex(idx)
 
     def accept(self) -> None:
         self.selection = StartSelection(

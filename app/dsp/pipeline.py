@@ -9,6 +9,7 @@ import numpy as np
 
 from app.audio.media_io import read_audio_mono
 from app.dsp import loudness
+from app.dsp.noise_profile import NoiseProfile, apply_noise_reduction
 from app.dsp.presets import VoicePreset, get_preset
 from app.dsp.separation import isolate_voice
 from app.legacy.unify.core import (
@@ -29,6 +30,10 @@ class ProcessingOptions:
     tilt_db_per_oct: Optional[float] = None
     isolation_amount: float = 0.0
     denoise_reduction_db: float = 12.0
+    denoise_floor_db: float = -36.0
+    denoise_sensitivity: float = 0.5
+    noise_profile: Optional[NoiseProfile] = None
+    use_noise_profile: bool = True
     dereverb_amount: float = 0.35
     gate_enable: bool = False
     bypass: bool = False
@@ -106,6 +111,22 @@ def process_take(signal: List[float], sr: int, opts: ProcessingOptions) -> Proce
     if opts.isolation_amount > 0.01:
         x = isolate_voice(x, sr, opts.isolation_amount)
 
+    used_profile = False
+    if opts.noise_profile and opts.use_noise_profile:
+        try:
+            x = apply_noise_reduction(
+                x,
+                sr,
+                opts.noise_profile,
+                reduction_db=opts.denoise_reduction_db,
+                floor_db=opts.denoise_floor_db,
+                sensitivity=opts.denoise_sensitivity,
+            )
+            used_profile = True
+            params.denoise = False
+        except Exception:
+            used_profile = False
+
     h_match: Optional[np.ndarray] = None
     if opts.reference_path and Path(opts.reference_path).exists() and params.eq_match_weight > 0.01:
         try:
@@ -128,6 +149,7 @@ def process_take(signal: List[float], sr: int, opts: ProcessingOptions) -> Proce
         "isolation": opts.isolation_amount,
         "dereverb": params.dereverb_amount,
         "denoise_db": params.denoise_reduction_db,
+        "noise_profile": 1.0 if used_profile else 0.0,
     }
     return ProcessResult(processed=processed, report=report, metadata=metadata)
 

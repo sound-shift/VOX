@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtWidgets
 
+from app.dsp.workflows import get_workflow
 from app.settings.storage import SettingsStorage
 from app.ui.main_window import MainWindow
 from app.ui.palette import TRACK_COLORS
@@ -23,10 +24,16 @@ def main() -> int:
 
     project_path = Path.cwd() / "default.voxproj"
     window = MainWindow(project_path, settings, mode=start.selection.mode)
-    window.apply_preset(start.selection.preset_key)
+    window.apply_workflow(start.selection.mode)
+    if start.selection.preset_key != get_workflow(start.selection.mode).preset_key:
+        window.apply_preset(start.selection.preset_key)
     if not window.timeline.tracks:
-        window.timeline.add_track("Voice", TRACK_COLORS[0])
-        window.timeline.add_track("Room Tone", TRACK_COLORS[1])
+        if start.selection.mode == "adr":
+            window.timeline.add_track("Dialog", TRACK_COLORS[0])
+            window.timeline.add_track("Picture Lock", TRACK_COLORS[2])
+        else:
+            window.timeline.add_track("Voice", TRACK_COLORS[0])
+            window.timeline.add_track("Room Tone", TRACK_COLORS[1])
         window.arrange_view.refresh()
 
     geometry_hex = settings.get_option("ui", "geometry")

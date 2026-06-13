@@ -8,8 +8,10 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from app.audio.engine import PlaybackEngine, Recorder, Transport
 from app.audio.media_io import AUDIO_IMPORT_FILTER, read_audio_mono
+from app.dsp.noise_profile import NoiseProfile
 from app.dsp.pipeline import ProcessingOptions, process_take
 from app.dsp.presets import get_preset
+from app.dsp.workflows import get_workflow
 from app.export.audio import AudioExporter, ExportError
 from app.project.database import AutosaveManager, ProjectDatabase
 from app.settings.storage import SettingsStorage
@@ -46,6 +48,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._current_preset = "male_low"
         self._shortcuts: list[QtGui.QShortcut] = []
         self._playback_origin_sec = 0.0
+        self._workflow = get_workflow(mode)
+        self._noise_profile: Optional[NoiseProfile] = None
         self.video_session = VideoSession()
 
         if project_path:
@@ -65,7 +69,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._setup_autosave()
         self._offer_autosave_recovery()
         self._restore_video_from_project()
+        self._restore_noise_profile()
         self._sync_transport_time()
+
+    def apply_workflow(self, mode: str) -> None:
+        self.mode = mode
+        self._workflow = get_workflow(mode)
+        self.apply_preset(self._workflow.preset_key)
+        self.process_panel.apply_workflow(self._workflow)
+        labels = {"podcast": "Podcast", "audiobook": "Audiobook", "adr": "ADR"}
+        self.setWindowTitle(f"VOX — VoiceOverXeaven ({labels.get(mode, mode)})")
+        self._set_status(f"Workflow: {labels.get(mode, mode)}")
 
     def _build_ui(self) -> None:
         shell = QtWidgets.QWidget(self)
@@ -95,6 +109,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.process_panel.monitorToggled.connect(self._toggle_monitor)
         self.process_panel.bypassToggled.connect(self._toggle_bypass)
         self.process_panel.resetRequested.connect(self._reset_processing)
+        self.process_panel.captureNoiseRequested.connect(self.capture_noise_sample)
         self.playback.positionChanged.connect(self._on_playback_position)
         self.playback.finished.connect(self._on_playback_finished)
 
@@ -114,9 +129,64 @@ class MainWindow(QtWidgets.QMainWindow):
             isolation_amount=state.isolation_amount,
             dereverb_amount=state.dereverb_amount,
             denoise_reduction_db=state.denoise_db,
+            denoise_floor_db=state.denoise_floor_db,
+            denoise_sensitivity=state.denoise_sensitivity,
+            noise_profile=self._noise_profile,
+            use_noise_profile=state.use_noise_profile,
             gate_enable=state.gate_enable,
             bypass=self.recorder.bypass_processing,
         )
+
+    def _restore_noise_profile(self) -> None:
+        payload = self.settings.get_option("processing", "noise_profile")
+        profile = NoiseProfile.from_dict(payload if isinstance(payload, dict) else None)
+        if profile:
+            self._noise_profile = profile
+            self.process_panel.set_noise_profile_status(profile.duration_sec)
+
+    def _persist_noise_profile(self) -> None:
+        if self._noise_profile:
+            self.settings.set_option("processing", "noise_profile", self._noise_profile.to_dict())
+        else:
+            self.settings.set_option("processing", "noise_profile", None)
+
+    def capture_noise_sample(self) -> None:
+        track_id = self._selected_track_id()
+        if track_id is None:
+            QtWidgets.QMessageBox.information(self, "Noise print", "Select a track with audio first")
+            return
+        clip, offset = self._clip_at_playhead(track_id)
+        if clip is None:
+            QtWidgets.QMessageBox.information(self, "Noise print", "No clip at playhead")
+            return
+        take = clip.active_take()
+        if take is None or not take.data:
+            QtWidgets.QMessageBox.information(self, "Noise print", "No audio in clip at playhead")
+            return
+
+        sr = self.timeline.sample_rate
+        window = 0.5
+        center = int(offset * sr)
+        half = int(window * sr / 2)
+        start = max(0, center - half)
+        end = min(len(take.data), center + half)
+        segment = take.data[start:end]
+        if len(segment) < sr // 20:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Noise print",
+                "Too little audio at playhead — need ~0.05 s of noise",
+            )
+            return
+        try:
+            profile = NoiseProfile.capture(segment, sr)
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "Noise print", str(exc))
+            return
+        self._noise_profile = profile
+        self._persist_noise_profile()
+        self.process_panel.set_noise_profile_status(profile.duration_sec)
+        self._set_status(f"Noise profile captured ({profile.duration_sec:.2f}s)")
 
     def _processed_take_data(self, data: list[float]) -> list[float]:
         return process_take(data, self.timeline.sample_rate, self._processing_options()).processed
@@ -145,6 +215,7 @@ class MainWindow(QtWidgets.QMainWindow):
         options_menu = bar.addMenu("Options")
         options_menu.addAction("Preferences…", self.open_preferences)
         options_menu.addAction("MP3 Bitrate…", self._choose_bitrate)
+        options_menu.addAction("Capture Noise Print @ Playhead", self.capture_noise_sample)
         options_menu.addAction("Set Reference (Match EQ)…", self._choose_reference)
 
         view_menu = bar.addMenu("View")
@@ -352,7 +423,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.timeline.arm_track(track_id, True)
         start = max(self.transport.position, self.recorder.transport_end())
         self.transport.locate(start)
-        duration = 5.0 if self.mode == "podcast" else 8.0
+        duration = self._workflow.record_duration_sec
         try:
             result = self.recorder.record(
                 track_id, duration=duration, prefer_live=True, start_sec=self.transport.position
@@ -369,7 +440,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not armed:
             QtWidgets.QMessageBox.information(self, "Record", "Arm at least one track (R)")
             return
-        duration = 5.0 if self.mode == "podcast" else 8.0
+        duration = self._workflow.record_duration_sec
         for track in armed:
             self.recorder.record(track.id, duration=duration, prefer_live=True)
         self.arrange_view.refresh()

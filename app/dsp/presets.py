@@ -47,6 +47,15 @@ PRESETS: Dict[str, VoicePreset] = {
         low_guard_hz=90.0,
         low_shelf_gain_db=1.5,
     ),
+    "adr_dialog": VoicePreset(
+        name="ADR / Dialog",
+        tilt_db_per_oct=-0.6,
+        presence_gain_db=3.2,
+        presence_range=(2800.0, 4500.0),
+        low_guard_hz=100.0,
+        deesser_range=(5500.0, 9000.0),
+        low_shelf_gain_db=0.5,
+    ),
 }
 
 
