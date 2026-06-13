@@ -114,6 +114,7 @@ def dereverb_spectral(x: np.ndarray, sr: int, amount: float = 0.5) -> np.ndarray
     freqs = np.linspace(0, sr/2, mag.shape[0])
     hf_boost = np.clip((freqs - 1500.0) / 6000.0, 0.0, 1.0)  # 0..1 от 1.5к до 7.5к
     k = 0.6 + 0.4 * hf_boost  # порог чуть ниже в ВЧ
+    k = k[:, None]
     # степень подавления
     suppr = np.clip((r - k) / (1.5 - k), 0.0, 1.0)
     depth_db = 12.0 * amount

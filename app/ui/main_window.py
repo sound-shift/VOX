@@ -6,8 +6,9 @@ from typing import Optional
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from app.audio.engine import PlaybackEngine, Recorder, Transport, read_wav_mono
-from app.dsp.magic import process_magic
+from app.audio.engine import PlaybackEngine, Recorder, Transport
+from app.audio.media_io import AUDIO_IMPORT_FILTER, read_audio_mono
+from app.dsp.pipeline import ProcessingOptions, process_take
 from app.dsp.presets import get_preset
 from app.export.audio import AudioExporter, ExportError
 from app.project.database import AutosaveManager, ProjectDatabase
@@ -15,8 +16,14 @@ from app.settings.storage import SettingsStorage
 from app.timeline.model import Clip, Timeline
 from app.ui.arrange_view import ArrangeView
 from app.ui.options_dialog import OptionsDialog
+from app.ui.palette import TRACK_COLORS
 from app.ui.process_panel import ProcessPanel
 from app.ui.transport_bar import TransportBar
+from app.ui.video_panel import VideoPanel
+from app.video.session import VideoSession
+
+VIDEO_IMPORT_FILTER = "Video (*.mp4 *.mov *.mkv *.avi *.webm *.m4v);;All files (*.*)"
+REFERENCE_FILTER = "Audio (*.wav *.flac *.mp3 *.ogg *.m4a);;All files (*.*)"
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -30,7 +37,7 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__(parent)
         self.mode = mode
         self.setWindowTitle("VOX — VoiceOverXeaven")
-        self.resize(1280, 780)
+        self.resize(1280, 820)
         self.timeline = Timeline()
         self.settings = settings
         self.database: Optional[ProjectDatabase] = None
@@ -38,6 +45,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project_path = project_path
         self._current_preset = "male_low"
         self._shortcuts: list[QtGui.QShortcut] = []
+        self._playback_origin_sec = 0.0
+        self.video_session = VideoSession()
 
         if project_path:
             self.database = ProjectDatabase(project_path)
@@ -55,6 +64,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._setup_hotkeys()
         self._setup_autosave()
         self._offer_autosave_recovery()
+        self._restore_video_from_project()
         self._sync_transport_time()
 
     def _build_ui(self) -> None:
@@ -62,6 +72,9 @@ class MainWindow(QtWidgets.QMainWindow):
         root = QtWidgets.QVBoxLayout(shell)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+
+        self.video_panel = VideoPanel(self)
+        root.addWidget(self.video_panel)
 
         body = QtWidgets.QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
@@ -87,8 +100,26 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def apply_preset(self, preset_key: str) -> None:
         self._current_preset = preset_key
-        preset = get_preset(preset_key)
-        self.process_panel.apply_preset(preset_key, preset)
+        self.process_panel.apply_preset(preset_key, get_preset(preset_key))
+
+    def _processing_options(self) -> ProcessingOptions:
+        state = self.process_panel.processing_state()
+        ref = self.settings.get_option("processing", "reference_file")
+        ref_path = Path(ref) if ref else None
+        return ProcessingOptions(
+            preset_key=self._current_preset,
+            reference_path=ref_path,
+            match_weight=state.match_weight,
+            tilt_db_per_oct=state.tilt_db_per_oct,
+            isolation_amount=state.isolation_amount,
+            dereverb_amount=state.dereverb_amount,
+            denoise_reduction_db=state.denoise_db,
+            gate_enable=state.gate_enable,
+            bypass=self.recorder.bypass_processing,
+        )
+
+    def _processed_take_data(self, data: list[float]) -> list[float]:
+        return process_take(data, self.timeline.sample_rate, self._processing_options()).processed
 
     def _wire_transport(self) -> None:
         self.transport_bar.playClicked.connect(self.toggle_playback)
@@ -105,7 +136,8 @@ class MainWindow(QtWidgets.QMainWindow):
         file_menu.addAction("Open…", self.open_project, "Ctrl+O")
         file_menu.addAction("Save", self.save_project, "Ctrl+S")
         file_menu.addAction("Save As…", self.save_project_as, "Shift+S")
-        file_menu.addAction("Import…", self.import_audio, "Ctrl+I")
+        file_menu.addAction("Import Audio…", self.import_audio, "Ctrl+I")
+        file_menu.addAction("Import Video…", self.import_video)
         file_menu.addAction("Export…", self.export_audio, "Ctrl+E")
         file_menu.addSeparator()
         file_menu.addAction("Exit", self.close)
@@ -113,7 +145,7 @@ class MainWindow(QtWidgets.QMainWindow):
         options_menu = bar.addMenu("Options")
         options_menu.addAction("Preferences…", self.open_preferences)
         options_menu.addAction("MP3 Bitrate…", self._choose_bitrate)
-        options_menu.addAction("Set Reference File…", self._choose_reference)
+        options_menu.addAction("Set Reference (Match EQ)…", self._choose_reference)
 
         view_menu = bar.addMenu("View")
         view_menu.addAction("Zoom In", lambda: self.arrange_view.set_zoom(12), "Z")
@@ -131,6 +163,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "record_armed": self.record_armed_tracks,
             "blade": self.blade_at_cursor,
             "marker": self.add_marker_at_cursor,
+            "toggle_takelanes": self.cycle_take_lane,
             "save": self.save_project,
             "save_as": self.save_project_as,
             "open": self.open_project,
@@ -181,6 +214,35 @@ class MainWindow(QtWidgets.QMainWindow):
         self.database = ProjectDatabase(latest)
         self._load_timeline_from_db()
 
+    def _project_dir(self) -> Path:
+        if self.project_path:
+            return self.project_path.parent
+        return Path.cwd()
+
+    def _ensure_picture_track(self):
+        for track in self.timeline.tracks.values():
+            if track.name == "Picture Lock":
+                return track
+        return self.timeline.add_track("Picture Lock", TRACK_COLORS[2])
+
+    def _restore_video_from_project(self) -> None:
+        if not self.database:
+            return
+        meta = self.database.load_setting("video_path")
+        path_str = meta.get("path") if meta else None
+        if path_str and Path(path_str).exists():
+            self.video_panel.load(Path(path_str))
+            self.video_panel.set_muted(True)
+            self.video_session.video_path = Path(path_str)
+
+    def _persist_video_path(self) -> None:
+        if not self.database:
+            return
+        if self.video_session.video_path:
+            self.database.save_setting("video_path", {"path": str(self.video_session.video_path)})
+        else:
+            self.database.save_setting("video_path", {"path": None})
+
     def _selected_track_id(self) -> Optional[int]:
         track_id = self.arrange_view.selected_track_id
         if track_id is not None and track_id in self.timeline.tracks:
@@ -196,28 +258,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_playhead_moved(self, seconds: float) -> None:
         self.transport.locate(seconds)
+        self.video_panel.seek(seconds)
         self._sync_transport_time()
 
     def _on_playback_position(self, seconds: float) -> None:
-        self.transport.position = seconds
-        self.arrange_view.set_playhead(seconds)
-        self._sync_transport_time()
+        absolute = self._playback_origin_sec + seconds
+        self.arrange_view.set_playhead(absolute)
+        self.video_panel.seek(absolute)
+        self.transport_bar.set_time(absolute)
 
     def _on_playback_finished(self) -> None:
         self.transport.pause()
+        self.video_panel.pause()
         self._set_status("Stopped")
 
     def _sync_transport_time(self) -> None:
         self.transport_bar.set_time(self.transport.position)
+        self.video_panel.seek(self.transport.position)
 
     def _set_status(self, text: str) -> None:
         self.transport_bar.set_status(text)
         self.statusBar().showMessage(text)
-
-    def _processed_take_data(self, data: list[float]) -> list[float]:
-        if self.recorder.bypass_processing:
-            return list(data)
-        return process_magic(data, self.timeline.sample_rate, self._current_preset).processed
 
     def _clip_at_playhead(self, track_id: int) -> tuple[Optional[Clip], float]:
         track = self.timeline.get_track(track_id)
@@ -246,19 +307,23 @@ class MainWindow(QtWidgets.QMainWindow):
         sample_offset = int(offset * self.timeline.sample_rate)
         data = take.data[sample_offset:]
         if track.monitor_processed and not self.recorder.bypass_processing:
-            full = self._processed_take_data(take.data)
-            data = full[sample_offset:]
+            data = self._processed_take_data(take.data)[sample_offset:]
         if self.playback.is_playing():
             self.playback.pause()
+            self.video_panel.pause()
             self.transport.pause()
             self._set_status("Paused")
         else:
+            self._playback_origin_sec = self.transport.position
             self.playback.play_take(data, self.timeline.sample_rate)
+            self.video_panel.seek(self.transport.position)
+            self.video_panel.play()
             self.transport.play()
             self._set_status("Playing")
 
     def stop_playback(self) -> None:
         self.playback.stop()
+        self.video_panel.stop()
         self.transport.pause()
         self.transport.locate(0.0)
         self.arrange_view.set_playhead(0.0)
@@ -285,10 +350,13 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if not self.timeline.get_track(track_id).armed:
             self.timeline.arm_track(track_id, True)
-        self.transport.locate(self.recorder.transport_end())
+        start = max(self.transport.position, self.recorder.transport_end())
+        self.transport.locate(start)
         duration = 5.0 if self.mode == "podcast" else 8.0
         try:
-            result = self.recorder.record(track_id, duration=duration, prefer_live=True)
+            result = self.recorder.record(
+                track_id, duration=duration, prefer_live=True, start_sec=self.transport.position
+            )
         except RuntimeError as exc:
             QtWidgets.QMessageBox.warning(self, "Record", str(exc))
             return
@@ -306,6 +374,20 @@ class MainWindow(QtWidgets.QMainWindow):
             self.recorder.record(track.id, duration=duration, prefer_live=True)
         self.arrange_view.refresh()
         self._set_status(f"Recorded {len(armed)} armed track(s)")
+
+    def cycle_take_lane(self) -> None:
+        track_id = self._selected_track_id()
+        if track_id is None:
+            return
+        clip, _ = self._clip_at_playhead(track_id)
+        if clip is None:
+            return
+        take_id = self.timeline.cycle_active_take(clip.id)
+        if take_id is None:
+            self._set_status("Single take only")
+            return
+        self.arrange_view.refresh()
+        self._set_status(f"Active take #{take_id}")
 
     def blade_at_cursor(self) -> None:
         track_id = self._selected_track_id()
@@ -339,12 +421,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if track_id is None:
             QtWidgets.QMessageBox.information(self, "Import", "Select a track first")
             return
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Import audio", filter="Audio (*.wav)")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Import audio", filter=AUDIO_IMPORT_FILTER)
         if not path:
             return
         try:
-            data, sr = read_wav_mono(Path(path), self.timeline.sample_rate)
-        except (OSError, ValueError) as exc:
+            data, sr = read_audio_mono(Path(path), self.timeline.sample_rate)
+        except (OSError, ValueError, RuntimeError) as exc:
             QtWidgets.QMessageBox.critical(self, "Import failed", str(exc))
             return
         if sr != self.timeline.sample_rate:
@@ -356,8 +438,34 @@ class MainWindow(QtWidgets.QMainWindow):
         self.arrange_view.refresh()
         self._set_status(f"Imported {Path(path).name}")
 
+    def import_video(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Import video (ADR)", filter=VIDEO_IMPORT_FILTER)
+        if not path:
+            return
+        video_path = Path(path)
+        try:
+            data, sr = self.video_session.load(video_path, self._project_dir(), self.timeline.sample_rate)
+        except (OSError, RuntimeError) as exc:
+            QtWidgets.QMessageBox.critical(self, "Video import failed", str(exc))
+            return
+        self.video_panel.load(video_path)
+        self.video_panel.set_muted(True)
+        if sr != self.timeline.sample_rate:
+            self.timeline.sample_rate = sr
+        track = self._ensure_picture_track()
+        if track.clips:
+            track.clips.clear()
+        duration = len(data) / sr
+        clip = self.timeline.add_clip(track.id, start=0.0, end=duration)
+        self.timeline.add_take(clip, data=data, start=0.0, end=duration, active=True)
+        self._persist_video_path()
+        self.arrange_view.refresh()
+        self._set_status(f"Video loaded: {video_path.name} ({duration:.1f}s)")
+
     def new_project(self) -> None:
         self.timeline = Timeline()
+        self.video_session.clear()
+        self.video_panel.clear()
         self.arrange_view.timeline = self.timeline
         self.arrange_view.selected_track_id = None
         self.arrange_view.refresh()
@@ -387,6 +495,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.arrange_view.refresh()
         self.recorder = Recorder(self.timeline)
         self.transport = Transport(self.timeline)
+        self._restore_video_from_project()
         self._set_status(f"Opened {self.project_path.name}")
 
     def save_project(self, show_message: bool = True) -> None:
@@ -394,6 +503,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         audio_dir = self.project_path.parent / "audio"
         self.database.save_timeline(self.timeline, audio_dir)
+        self._persist_video_path()
         if self.autosaves:
             self.autosaves.autosave(self.project_path)
         if show_message:
@@ -462,9 +572,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.settings.set_option("audio", "mp3_bitrate", int(bitrate))
 
     def _choose_reference(self) -> None:
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select reference file")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Reference for Match EQ", filter=REFERENCE_FILTER)
         if path:
             self.settings.set_option("processing", "reference_file", path)
+            self._set_status(f"Reference: {Path(path).name}")
 
     def _toggle_monitor(self, state: bool) -> None:
         track_id = self._selected_track_id()

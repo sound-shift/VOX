@@ -165,5 +165,21 @@ class Timeline:
     def remove_marker(self, marker_id: int) -> None:
         self.markers.pop(marker_id, None)
 
+    def cycle_active_take(self, clip_id: int, direction: int = 1) -> Optional[int]:
+        for track in self.tracks.values():
+            for clip in track.clips:
+                if clip.id != clip_id or not clip.takes:
+                    continue
+                take_ids = [take.id for take in clip.takes]
+                active = clip.active_take()
+                if active is None:
+                    clip.set_active_take(take_ids[0])
+                    return take_ids[0]
+                idx = take_ids.index(active.id)
+                next_id = take_ids[(idx + direction) % len(take_ids)]
+                clip.set_active_take(next_id)
+                return next_id
+        return None
+
 
 __all__ = ["Timeline", "Track", "Clip", "Take", "Marker"]

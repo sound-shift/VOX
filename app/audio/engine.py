@@ -63,11 +63,12 @@ class Recorder:
         source: Optional[Callable[[int], List[float]]] = None,
         *,
         prefer_live: bool = True,
+        start_sec: Optional[float] = None,
     ) -> RecordedTake:
         track = self.timeline.get_track(track_id)
         if not track.armed:
             raise RuntimeError("Track must be armed before recording")
-        clip_start = self.transport_end()
+        clip_start = self.transport_end() if start_sec is None else max(0.0, start_sec)
         clip = self.timeline.add_clip(track_id, start=clip_start, end=clip_start + duration)
         if source is not None:
             data = source(int(self.sample_rate * duration))
