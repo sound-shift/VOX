@@ -8,6 +8,7 @@ from PySide6 import QtCore, QtWidgets
 
 from app.settings.storage import SettingsStorage
 from app.ui.main_window import MainWindow
+from app.ui.palette import TRACK_COLORS
 from app.ui.start_screen import StartScreen
 from app.ui.theme import ThemeManager
 
@@ -24,9 +25,9 @@ def main() -> int:
     window = MainWindow(project_path, settings, mode=start.selection.mode)
     window.apply_preset(start.selection.preset_key)
     if not window.timeline.tracks:
-        window.timeline.add_track("Track 1", "#4caf50")
-        window.timeline.add_track("Track 2", "#42a5f5")
-        window.timeline_widget.refresh()
+        window.timeline.add_track("Voice", TRACK_COLORS[0])
+        window.timeline.add_track("Room Tone", TRACK_COLORS[1])
+        window.arrange_view.refresh()
 
     geometry_hex = settings.get_option("ui", "geometry")
     if isinstance(geometry_hex, str) and geometry_hex:

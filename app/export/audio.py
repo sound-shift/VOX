@@ -36,7 +36,7 @@ class AudioExporter:
         if fmt == "wav":
             self._export_wav(normalized, sr, target)
         elif fmt == "flac":
-            self._export_wav(normalized, sr, target)  # simplified placeholder
+            self._export_flac(normalized, sr, target)
         elif fmt == "mp3":
             self._export_mp3(normalized, sr, target, mp3_bitrate)
         else:
@@ -50,6 +50,21 @@ class AudioExporter:
             wf.setframerate(sr)
             frames = b"".join(struct.pack("<h", max(-32767, min(32767, int(sample * 32767)))) for sample in signal)
             wf.writeframes(frames)
+
+    def _export_flac(self, signal: List[float], sr: int, target: Path) -> None:
+        ffmpeg = self.ffmpeg_path
+        if ffmpeg is None:
+            raise ExportError(
+                "FFmpeg binary not found. Place ffmpeg(.exe) in third_party/ffmpeg or add it to PATH."
+            )
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            self._export_wav(signal, sr, Path(tmp.name))
+            tmp.flush()
+            cmd = [ffmpeg.as_posix(), "-y", "-i", tmp.name, "-c:a", "flac", target.as_posix()]
+            try:
+                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except subprocess.CalledProcessError as exc:
+                raise ExportError(exc.stderr.decode("utf-8", errors="ignore")) from exc
 
     def _export_mp3(self, signal: List[float], sr: int, target: Path, bitrate: int) -> None:
         ffmpeg = self.ffmpeg_path

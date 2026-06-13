@@ -1,4 +1,4 @@
-"""Processing controls derived from the Unify process panel."""
+"""Channel strip / processing inspector."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,6 +7,7 @@ from PySide6 import QtCore, QtWidgets
 
 from app.dsp.presets import VoicePreset
 from app.legacy.unify.controls import EqPreview, Knob
+from app.ui import palette
 
 
 @dataclass
@@ -24,36 +25,49 @@ class ProcessPanel(QtWidgets.QWidget):
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         self._state = ProcessState()
+        self.setMinimumWidth(280)
+        self.setMaximumWidth(340)
+        self.setStyleSheet(f"background: {palette.BG_PANEL}; border-left: 1px solid {palette.BORDER};")
         self._build_ui()
 
     def _build_ui(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
 
+        title = QtWidgets.QLabel("CHANNEL STRIP")
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title)
+
+        eq_group = QtWidgets.QGroupBox("EQ Preview")
+        eq_layout = QtWidgets.QVBoxLayout(eq_group)
         self.preview = EqPreview(self)
-        layout.addWidget(self.preview)
+        eq_layout.addWidget(self.preview)
+        layout.addWidget(eq_group)
 
-        knob_layout = QtWidgets.QHBoxLayout()
+        proc_group = QtWidgets.QGroupBox("Processing")
+        proc_layout = QtWidgets.QVBoxLayout(proc_group)
+        knob_row = QtWidgets.QHBoxLayout()
         self.knob_tilt = Knob("Tilt", -6.0, 6.0, 0.5, " dB/oct", -1.5)
         self.knob_presence = Knob("Presence", 0.0, 6.0, 0.5, " dB", 3.0)
         self.knob_denoise = Knob("Denoise", 0.0, 1.0, 0.1, "", 0.3)
         for knob in (self.knob_tilt, self.knob_presence, self.knob_denoise):
-            knob.setFixedWidth(120)
-            knob_layout.addWidget(knob)
-        layout.addLayout(knob_layout)
+            knob.setFixedWidth(88)
+            knob_row.addWidget(knob)
+        proc_layout.addLayout(knob_row)
 
-        buttons = QtWidgets.QHBoxLayout()
-        self.btn_monitor = QtWidgets.QPushButton("Monitor processed", self)
+        btn_row = QtWidgets.QVBoxLayout()
+        self.btn_monitor = QtWidgets.QPushButton("Monitor Processed")
         self.btn_monitor.setCheckable(True)
-        self.btn_bypass = QtWidgets.QPushButton("Bypass", self)
+        self.btn_bypass = QtWidgets.QPushButton("Bypass FX")
         self.btn_bypass.setCheckable(True)
-        self.btn_reset = QtWidgets.QPushButton("Reset to preset", self)
-        buttons.addWidget(self.btn_monitor)
-        buttons.addWidget(self.btn_bypass)
-        buttons.addStretch(1)
-        buttons.addWidget(self.btn_reset)
-        layout.addLayout(buttons)
+        self.btn_reset = QtWidgets.QPushButton("Reset Preset")
+        btn_row.addWidget(self.btn_monitor)
+        btn_row.addWidget(self.btn_bypass)
+        btn_row.addWidget(self.btn_reset)
+        proc_layout.addLayout(btn_row)
+        layout.addWidget(proc_group)
+        layout.addStretch(1)
 
         self.btn_monitor.toggled.connect(self.monitorToggled.emit)
         self.btn_bypass.toggled.connect(self.bypassToggled.emit)

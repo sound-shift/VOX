@@ -1,14 +1,15 @@
 """Audio transport, recording and preroll helpers."""
 from __future__ import annotations
 
+import math
+import random
+import struct
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
 
-import math
-import random
-import wave
-import struct
+from PySide6 import QtCore
 
 from app.timeline.model import Clip, Timeline
 
@@ -47,7 +48,7 @@ class RecordedTake:
 
 
 class Recorder:
-    """High level recording helper. The MVP simulates recording via synthetic tones."""
+    """Recording helper — live mic when available, synthetic fallback otherwise."""
 
     def __init__(self, timeline: Timeline, sr: int = TARGET_SR) -> None:
         self.timeline = timeline
@@ -55,19 +56,47 @@ class Recorder:
         self.monitor_processed = False
         self.bypass_processing = False
 
-    def record(self, track_id: int, duration: float, source: Optional[Callable[[int], List[float]]] = None) -> RecordedTake:
+    def record(
+        self,
+        track_id: int,
+        duration: float,
+        source: Optional[Callable[[int], List[float]]] = None,
+        *,
+        prefer_live: bool = True,
+    ) -> RecordedTake:
         track = self.timeline.get_track(track_id)
         if not track.armed:
             raise RuntimeError("Track must be armed before recording")
-        clip = self.timeline.add_clip(track_id, start=0.0, end=duration)
-        total_samples = int(self.sample_rate * duration)
-        if source is None:
-            data = self._simulate_voice(total_samples)
+        clip_start = self.transport_end()
+        clip = self.timeline.add_clip(track_id, start=clip_start, end=clip_start + duration)
+        if source is not None:
+            data = source(int(self.sample_rate * duration))
+        elif prefer_live:
+            data = self._record_live(duration)
         else:
-            data = source(total_samples)
-        self.timeline.add_take(clip, data=data, start=0.0, end=duration, active=True)
+            data = self._simulate_voice(int(self.sample_rate * duration))
+        actual_duration = len(data) / self.sample_rate
+        clip.end = clip.start + actual_duration
+        self.timeline.add_take(clip, data=data, start=0.0, end=actual_duration, active=True)
         file_path = self._write_temp_take(track_id, clip)
         return RecordedTake(clip=clip, data=data, file_path=file_path)
+
+    def transport_end(self) -> float:
+        end = 0.0
+        for track in self.timeline.tracks.values():
+            for clip in track.clips:
+                end = max(end, clip.end)
+        return end
+
+    def _record_live(self, duration: float) -> List[float]:
+        from app.audio.live_recorder import capture_microphone, microphone_available
+
+        if microphone_available():
+            try:
+                return capture_microphone(duration, self.sample_rate, with_preroll=True)
+            except Exception:
+                pass
+        return self._simulate_voice(int(self.sample_rate * duration))
 
     def _simulate_voice(self, samples: int) -> List[float]:
         out = []
@@ -154,18 +183,33 @@ def write_wav_mono(path: Path, data: List[float], sr: int = TARGET_SR) -> None:
         wf.writeframes(frames)
 
 
-class PlaybackEngine:
-    """Play active takes through Qt multimedia."""
+class PlaybackEngine(QtCore.QObject):
+    """Play takes through Qt multimedia with playhead callbacks."""
+
+    positionChanged = QtCore.Signal(float)
+    finished = QtCore.Signal()
 
     def __init__(self, parent=None) -> None:
+        super().__init__(parent)
         from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 
-        self._player = QMediaPlayer(parent)
-        self._output = QAudioOutput(parent)
+        self._player = QMediaPlayer(self)
+        self._output = QAudioOutput(self)
         self._player.setAudioOutput(self._output)
         self._temp_path: Optional[Path] = None
+        self._player.positionChanged.connect(self._on_position)
+        self._player.playbackStateChanged.connect(self._on_state)
 
-    def play_take(self, data: List[float], sr: int = TARGET_SR) -> None:
+    def _on_position(self, ms: int) -> None:
+        self.positionChanged.emit(ms / 1000.0)
+
+    def _on_state(self, state) -> None:
+        from PySide6.QtMultimedia import QMediaPlayer
+
+        if state == QMediaPlayer.PlaybackState.StoppedState:
+            self.finished.emit()
+
+    def play_take(self, data: List[float], sr: int = TARGET_SR, offset_sec: float = 0.0) -> None:
         from PySide6.QtCore import QUrl
 
         tmp_dir = Path(".vox_takes")
@@ -173,6 +217,8 @@ class PlaybackEngine:
         self._temp_path = tmp_dir / "_preview.wav"
         write_wav_mono(self._temp_path, data, sr)
         self._player.setSource(QUrl.fromLocalFile(str(self._temp_path.resolve())))
+        if offset_sec > 0:
+            self._player.setPosition(int(offset_sec * 1000))
         self._player.play()
 
     def pause(self) -> None:
