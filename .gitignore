@@ -1,9 +1,6 @@
-codex/fix-modulenotfounderror-for-app
-__pycache__/
-*.py[cod]
-=======
 .vox_takes/
 __pycache__/
+*.py[cod]
 *.pyc
 .autosaves/
-main
+.venv/

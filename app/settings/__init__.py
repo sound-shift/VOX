@@ -1,5 +1,5 @@
 """Settings helpers for the VOX desktop application."""
 
-from .storage import SettingsStorage, load_settings
+from .storage import DEFAULT_HOTKEYS, DEFAULT_SETTINGS, SettingsStorage
 
-__all__ = ["SettingsStorage", "load_settings"]
+__all__ = ["SettingsStorage", "DEFAULT_SETTINGS", "DEFAULT_HOTKEYS"]

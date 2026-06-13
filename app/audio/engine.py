@@ -115,4 +115,93 @@ class Transport:
         self.position = max(0.0, position)
 
 
-__all__ = ["Recorder", "Transport", "preroll_sequence", "generate_beep", "RecordedTake"]
+def read_wav_mono(path: Path, target_sr: int = TARGET_SR) -> tuple[List[float], int]:
+    with wave.open(path.as_posix(), "rb") as wf:
+        channels = wf.getnchannels()
+        sample_width = wf.getsampwidth()
+        sr = wf.getframerate()
+        frames = wf.readframes(wf.getnframes())
+    if sample_width != 2:
+        raise ValueError("Only 16-bit PCM WAV files are supported")
+    count = len(frames) // 2
+    samples = struct.unpack(f"<{count}h", frames)
+    if channels == 2:
+        mono = [(samples[i] + samples[i + 1]) / (2 * 32767.0) for i in range(0, len(samples), 2)]
+    else:
+        mono = [sample / 32767.0 for sample in samples]
+    if sr != target_sr and mono:
+        ratio = target_sr / sr
+        new_len = max(1, int(len(mono) * ratio))
+        resampled: List[float] = []
+        for i in range(new_len):
+            src = i / ratio
+            left = int(src)
+            right = min(left + 1, len(mono) - 1)
+            frac = src - left
+            resampled.append(mono[left] * (1.0 - frac) + mono[right] * frac)
+        mono = resampled
+        sr = target_sr
+    return mono, sr
+
+
+def write_wav_mono(path: Path, data: List[float], sr: int = TARGET_SR) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(path.as_posix(), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        frames = b"".join(struct.pack("<h", max(-32767, min(32767, int(sample * 32767)))) for sample in data)
+        wf.writeframes(frames)
+
+
+class PlaybackEngine:
+    """Play active takes through Qt multimedia."""
+
+    def __init__(self, parent=None) -> None:
+        from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+
+        self._player = QMediaPlayer(parent)
+        self._output = QAudioOutput(parent)
+        self._player.setAudioOutput(self._output)
+        self._temp_path: Optional[Path] = None
+
+    def play_take(self, data: List[float], sr: int = TARGET_SR) -> None:
+        from PySide6.QtCore import QUrl
+
+        tmp_dir = Path(".vox_takes")
+        tmp_dir.mkdir(exist_ok=True)
+        self._temp_path = tmp_dir / "_preview.wav"
+        write_wav_mono(self._temp_path, data, sr)
+        self._player.setSource(QUrl.fromLocalFile(str(self._temp_path.resolve())))
+        self._player.play()
+
+    def pause(self) -> None:
+        self._player.pause()
+
+    def stop(self) -> None:
+        self._player.stop()
+
+    def toggle(self) -> None:
+        from PySide6.QtMultimedia import QMediaPlayer
+
+        if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self._player.pause()
+        else:
+            self._player.play()
+
+    def is_playing(self) -> bool:
+        from PySide6.QtMultimedia import QMediaPlayer
+
+        return self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+
+
+__all__ = [
+    "Recorder",
+    "Transport",
+    "PlaybackEngine",
+    "preroll_sequence",
+    "generate_beep",
+    "RecordedTake",
+    "read_wav_mono",
+    "write_wav_mono",
+]
