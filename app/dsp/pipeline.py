@@ -37,6 +37,7 @@ class ProcessingOptions:
     dereverb_amount: float = 0.35
     gate_enable: bool = False
     bypass: bool = False
+    use_ml_isolation: bool = False
 
 
 @dataclass
@@ -109,7 +110,12 @@ def process_take(signal: List[float], sr: int, opts: ProcessingOptions) -> Proce
     x, sr = to_sr_mono(x, sr)
 
     if opts.isolation_amount > 0.01:
-        x = isolate_voice(x, sr, opts.isolation_amount)
+        if opts.use_ml_isolation:
+            from app.dsp.ml_separation import isolate_voice_ml
+
+            x = isolate_voice_ml(x, sr, opts.isolation_amount)
+        else:
+            x = isolate_voice(x, sr, opts.isolation_amount)
 
     used_profile = False
     if opts.noise_profile and opts.use_noise_profile:

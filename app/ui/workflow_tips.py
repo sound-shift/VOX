@@ -6,9 +6,9 @@ from PySide6 import QtWidgets
 from app.ui import palette
 
 TIPS = {
-    "podcast": "① Select track  ② Arm (R)  ③ Record (*)  ④ Monitor processed  ⑤ Export",
-    "audiobook": "① Arm track  ② Record long take  ③ Blade (B) to edit  ④ L = switch takes",
-    "adr": "① Import Video  ② Capture noise @ pause  ③ Arm Dialog  ④ Record while watching picture  ⑤ Export",
+    "podcast": "① Select track  ② Arm (R)  ③ Record (*)  ④ Monitor processed  ⑤ Export  ·  Ctrl+Z undo",
+    "audiobook": "① Arm  ② Record  ③ Blade (B)  ④ Click take lanes A/B/C  ⑤ L = cycle takes",
+    "adr": "① Import Video  ② Click video to scrub  ③ [ ] loop  ④ P punch-in  ⑤ Capture noise  ⑥ Record",
 }
 
 

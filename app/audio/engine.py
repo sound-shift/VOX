@@ -70,17 +70,74 @@ class Recorder:
             raise RuntimeError("Track must be armed before recording")
         clip_start = self.transport_end() if start_sec is None else max(0.0, start_sec)
         clip = self.timeline.add_clip(track_id, start=clip_start, end=clip_start + duration)
-        if source is not None:
-            data = source(int(self.sample_rate * duration))
-        elif prefer_live:
-            data = self._record_live(duration)
-        else:
-            data = self._simulate_voice(int(self.sample_rate * duration))
+        data = self._capture_audio(duration, source=source, prefer_live=prefer_live)
         actual_duration = len(data) / self.sample_rate
         clip.end = clip.start + actual_duration
         self.timeline.add_take(clip, data=data, start=0.0, end=actual_duration, active=True)
         file_path = self._write_temp_take(track_id, clip)
         return RecordedTake(clip=clip, data=data, file_path=file_path)
+
+    def punch_record(
+        self,
+        track_id: int,
+        punch_in: float,
+        punch_out: float,
+        *,
+        prefer_live: bool = True,
+    ) -> RecordedTake:
+        """Overwrite a time range inside an existing clip (new comp take)."""
+        track = self.timeline.get_track(track_id)
+        if not track.armed:
+            raise RuntimeError("Track must be armed before recording")
+        duration = punch_out - punch_in
+        if duration < 0.05:
+            raise RuntimeError("Punch region too short (need ≥ 0.05 s)")
+
+        clip: Optional[Clip] = None
+        for candidate in track.clips:
+            if candidate.start <= punch_in < candidate.end and punch_out <= candidate.end + 0.001:
+                clip = candidate
+                break
+        if clip is None:
+            return self.record(track_id, duration, prefer_live=prefer_live, start_sec=punch_in)
+
+        take = clip.active_take()
+        if take is None or not take.data:
+            return self.record(track_id, duration, prefer_live=prefer_live, start_sec=punch_in)
+
+        new_segment = self._capture_audio(duration, prefer_live=prefer_live)
+        sr = self.sample_rate
+        rel_in = punch_in - clip.start
+        rel_out = punch_out - clip.start
+        si = max(0, int(rel_in * sr))
+        ei = min(len(take.data), int(rel_out * sr))
+        target_len = ei - si
+        if len(new_segment) > target_len:
+            new_segment = new_segment[:target_len]
+        elif len(new_segment) < target_len:
+            new_segment = new_segment + [0.0] * (target_len - len(new_segment))
+
+        merged = list(take.data[:si]) + list(new_segment) + list(take.data[ei:])
+        clip_duration = len(merged) / sr
+        clip.end = clip.start + clip_duration
+        new_take = self.timeline.add_take(
+            clip, data=merged, start=0.0, end=clip_duration, active=True
+        )
+        file_path = self._write_temp_take(track_id, clip)
+        return RecordedTake(clip=clip, data=list(new_take.data), file_path=file_path)
+
+    def _capture_audio(
+        self,
+        duration: float,
+        source: Optional[Callable[[int], List[float]]] = None,
+        *,
+        prefer_live: bool = True,
+    ) -> List[float]:
+        if source is not None:
+            return source(int(self.sample_rate * duration))
+        if prefer_live:
+            return self._record_live(duration)
+        return self._simulate_voice(int(self.sample_rate * duration))
 
     def transport_end(self) -> float:
         end = 0.0

@@ -16,6 +16,7 @@ from app.export.audio import AudioExporter, ExportError
 from app.project.database import AutosaveManager, ProjectDatabase
 from app.settings.storage import SettingsStorage
 from app.timeline.model import Clip, Timeline
+from app.timeline.undo import UndoStack
 from app.ui.arrange_view import ArrangeView
 from app.ui.options_dialog import OptionsDialog
 from app.ui.palette import TRACK_COLORS
@@ -52,6 +53,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._workflow = get_workflow(mode)
         self._noise_profile: Optional[NoiseProfile] = None
         self.video_session = VideoSession()
+        self._undo = UndoStack()
+        self._loop_enabled = False
+        self._loop_in: Optional[float] = None
+        self._loop_out: Optional[float] = None
 
         if project_path:
             self.database = ProjectDatabase(project_path)
@@ -72,6 +77,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._restore_video_from_project()
         self._restore_noise_profile()
         self._sync_transport_time()
+        self._undo.reset(self.timeline)
 
     def apply_workflow(self, mode: str) -> None:
         self.mode = mode
@@ -92,6 +98,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.video_panel = VideoPanel(self)
         self.video_panel.importRequested.connect(self.import_video)
+        self.video_panel.seekRequested.connect(self._seek_from_video)
         root.addWidget(self.video_panel)
 
         self.tips_bar = WorkflowTipsBar(self)
@@ -113,10 +120,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.arrange_view.trackSelected.connect(self._on_track_selected)
         self.arrange_view.playheadMoved.connect(self._on_playhead_moved)
         self.arrange_view.armToggled.connect(self._toggle_arm_track)
+        self.arrange_view.takeSelected.connect(self._select_take)
         self.process_panel.monitorToggled.connect(self._toggle_monitor)
         self.process_panel.bypassToggled.connect(self._toggle_bypass)
         self.process_panel.resetRequested.connect(self._reset_processing)
         self.process_panel.captureNoiseRequested.connect(self.capture_noise_sample)
+        self.process_panel.pictureLockReferenceRequested.connect(self.use_picture_lock_reference)
         self.playback.positionChanged.connect(self._on_playback_position)
         self.playback.finished.connect(self._on_playback_finished)
 
@@ -142,6 +151,7 @@ class MainWindow(QtWidgets.QMainWindow):
             use_noise_profile=state.use_noise_profile,
             gate_enable=state.gate_enable,
             bypass=self.recorder.bypass_processing,
+            use_ml_isolation=state.use_ml_isolation,
         )
 
     def _restore_noise_profile(self) -> None:
@@ -205,6 +215,112 @@ class MainWindow(QtWidgets.QMainWindow):
         self.transport_bar.armClicked.connect(self.toggle_arm_selected)
         self.transport_bar.bladeClicked.connect(self.blade_at_cursor)
         self.transport_bar.markerClicked.connect(self.add_marker_at_cursor)
+        self.transport_bar.loopInClicked.connect(self.set_loop_in)
+        self.transport_bar.loopOutClicked.connect(self.set_loop_out)
+        self.transport_bar.loopToggleClicked.connect(self.toggle_loop)
+        self.transport_bar.punchClicked.connect(self.punch_record)
+
+    def _undo_push(self) -> None:
+        self._undo.push(self.timeline)
+
+    def undo(self) -> None:
+        if self._undo.undo(self.timeline):
+            self.arrange_view.refresh()
+            self._set_status("Undo")
+
+    def redo(self) -> None:
+        if self._undo.redo(self.timeline):
+            self.arrange_view.refresh()
+            self._set_status("Redo")
+
+    def set_loop_in(self) -> None:
+        self._loop_in = self.transport.position
+        if self._loop_out is not None and self._loop_out <= self._loop_in:
+            self._loop_out = None
+        self._update_loop_ui()
+        self._set_status(f"Loop in @ {self._loop_in:.1f}s")
+
+    def set_loop_out(self) -> None:
+        self._loop_out = self.transport.position
+        if self._loop_in is not None and self._loop_out <= self._loop_in:
+            self._loop_in, self._loop_out = self._loop_out, self._loop_in
+        self._update_loop_ui()
+        self._set_status(f"Loop out @ {self._loop_out:.1f}s")
+
+    def toggle_loop(self) -> None:
+        if self._loop_in is None or self._loop_out is None:
+            QtWidgets.QMessageBox.information(self, "Loop", "Set loop in ([) and loop out (]) first")
+            self.transport_bar.btn_loop.setChecked(False)
+            return
+        self._loop_enabled = self.transport_bar.btn_loop.isChecked()
+        self._update_loop_ui()
+        self._set_status("Loop on" if self._loop_enabled else "Loop off")
+
+    def _update_loop_ui(self) -> None:
+        self.arrange_view.set_loop_region(self._loop_in, self._loop_out)
+        self.transport_bar.set_loop_region(self._loop_in, self._loop_out)
+        self.transport_bar.set_loop_enabled(self._loop_enabled)
+
+    def _seek_from_video(self, seconds: float) -> None:
+        self.transport.locate(seconds)
+        self.arrange_view.set_playhead(seconds)
+        self.video_panel.seek(seconds)
+        self._sync_transport_time()
+
+    def _select_take(self, clip_id: int, take_id: int) -> None:
+        if self.timeline.set_active_take(clip_id, take_id):
+            self._undo_push()
+            self.arrange_view.refresh()
+            self._set_status(f"Active take #{take_id}")
+
+    def use_picture_lock_reference(self) -> None:
+        track = self._ensure_picture_track()
+        clip, _ = self._clip_at_playhead(track.id)
+        if clip is None and track.clips:
+            clip = track.clips[0]
+        if clip is None:
+            QtWidgets.QMessageBox.information(self, "Match EQ", "Import video first (Picture Lock track)")
+            return
+        take = clip.active_take()
+        if take is None or not take.data:
+            QtWidgets.QMessageBox.information(self, "Match EQ", "No audio on Picture Lock track")
+            return
+        ref_dir = self._project_dir() / ".vox_refs"
+        ref_dir.mkdir(exist_ok=True)
+        ref_path = ref_dir / "picture_lock_ref.wav"
+        from app.audio.engine import write_wav_mono
+
+        write_wav_mono(ref_path, take.data, self.timeline.sample_rate)
+        self.settings.set_option("processing", "reference_file", str(ref_path))
+        self._set_status(f"Reference from Picture Lock ({len(take.data) / self.timeline.sample_rate:.1f}s)")
+
+    def punch_record(self) -> None:
+        track_id = self._selected_track_id()
+        if track_id is None:
+            QtWidgets.QMessageBox.information(self, "Punch-in", "Select a track first")
+            return
+        if not self.timeline.get_track(track_id).armed:
+            self.timeline.arm_track(track_id, True)
+        if self._loop_in is not None and self._loop_out is not None and self._loop_out > self._loop_in:
+            punch_in, punch_out = self._loop_in, self._loop_out
+        else:
+            punch_in = self.transport.position
+            punch_out = punch_in + self._workflow.record_duration_sec
+        self.transport.locate(punch_in)
+        self._undo_push()
+        try:
+            self.recorder.punch_record(track_id, punch_in, punch_out, prefer_live=True)
+        except RuntimeError as exc:
+            QtWidgets.QMessageBox.warning(self, "Punch-in", str(exc))
+            return
+        self.arrange_view.refresh()
+        self._set_status(f"Punch-in {punch_in:.1f}s–{punch_out:.1f}s")
+
+    def show_quick_tour(self) -> None:
+        from app.ui.quick_tour import QuickTour
+
+        tour = QuickTour(self)
+        tour.exec()
 
     def _create_menus(self) -> None:
         bar = self.menuBar()
@@ -224,10 +340,12 @@ class MainWindow(QtWidgets.QMainWindow):
         options_menu.addAction("MP3 Bitrate…", self._choose_bitrate)
         options_menu.addAction("Capture Noise Print @ Playhead", self.capture_noise_sample)
         options_menu.addAction("Set Reference (Match EQ)…", self._choose_reference)
+        options_menu.addAction("Use Picture Lock as Reference", self.use_picture_lock_reference)
 
         view_menu = bar.addMenu("View")
         view_menu.addAction("Zoom In", lambda: self.arrange_view.set_zoom(12), "Z")
         view_menu.addAction("Zoom Out", lambda: self.arrange_view.set_zoom(-12), "X")
+        view_menu.addAction("Quick Tour…", self.show_quick_tour)
 
     def _setup_hotkeys(self) -> None:
         for shortcut in self._shortcuts:
@@ -252,6 +370,12 @@ class MainWindow(QtWidgets.QMainWindow):
             "zoom_out": lambda: self.arrange_view.set_zoom(-12),
             "bypass_processing": lambda: self.process_panel.btn_bypass.toggle(),
             "monitor_processed": lambda: self.process_panel.btn_monitor.toggle(),
+            "undo": self.undo,
+            "redo": self.redo,
+            "loop_in": self.set_loop_in,
+            "loop_out": self.set_loop_out,
+            "toggle_loop": self.toggle_loop,
+            "punch_record": self.punch_record,
         }
         for action_name, handler in mapping.items():
             seq_text = bindings.get(action_name)
@@ -341,9 +465,41 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_playback_position(self, seconds: float) -> None:
         absolute = self._playback_origin_sec + seconds
+        if (
+            self._loop_enabled
+            and self._loop_in is not None
+            and self._loop_out is not None
+            and absolute >= self._loop_out - 0.02
+        ):
+            self._restart_playback_at(self._loop_in)
+            return
         self.arrange_view.set_playhead(absolute)
         self.video_panel.seek(absolute)
         self.transport_bar.set_time(absolute)
+
+    def _restart_playback_at(self, position: float) -> None:
+        track_id = self._selected_track_id()
+        if track_id is None:
+            return
+        clip, offset = self._clip_at_playhead(track_id)
+        if clip is None:
+            return
+        take = clip.active_take()
+        if take is None or not take.data:
+            return
+        track = self.timeline.get_track(track_id)
+        sample_offset = int((position - clip.start) * self.timeline.sample_rate)
+        sample_offset = max(0, min(sample_offset, len(take.data) - 1))
+        data = take.data[sample_offset:]
+        if track.monitor_processed and not self.recorder.bypass_processing:
+            data = self._processed_take_data(take.data)[sample_offset:]
+        self.playback.stop()
+        self._playback_origin_sec = position
+        self.transport.locate(position)
+        self.arrange_view.set_playhead(position)
+        self.video_panel.seek(position)
+        self.playback.play_take(data, self.timeline.sample_rate)
+        self.video_panel.play()
 
     def _on_playback_finished(self) -> None:
         self.transport.pause()
@@ -431,6 +587,7 @@ class MainWindow(QtWidgets.QMainWindow):
         start = max(self.transport.position, self.recorder.transport_end())
         self.transport.locate(start)
         duration = self._workflow.record_duration_sec
+        self._undo_push()
         try:
             result = self.recorder.record(
                 track_id, duration=duration, prefer_live=True, start_sec=self.transport.position
@@ -448,6 +605,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "Record", "Arm at least one track (R)")
             return
         duration = self._workflow.record_duration_sec
+        self._undo_push()
         for track in armed:
             self.recorder.record(track.id, duration=duration, prefer_live=True)
         self.arrange_view.refresh()
@@ -482,6 +640,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not (clip.start < position < clip.end):
             position = (clip.start + clip.end) / 2.0
         try:
+            self._undo_push()
             self.timeline.blade(clip.id, position)
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, "Blade", str(exc))
@@ -511,6 +670,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.timeline.sample_rate = sr
         start = self.transport.position
         duration = len(data) / sr
+        self._undo_push()
         clip = self.timeline.add_clip(track_id, start=start, end=start + duration)
         self.timeline.add_take(clip, data=data, start=0.0, end=duration, active=True)
         self.arrange_view.refresh()
@@ -534,6 +694,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if track.clips:
             track.clips.clear()
         duration = len(data) / sr
+        self._undo_push()
         clip = self.timeline.add_clip(track.id, start=0.0, end=duration)
         self.timeline.add_take(clip, data=data, start=0.0, end=duration, active=True)
         self._persist_video_path()
@@ -544,6 +705,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timeline = Timeline()
         self.video_session.clear()
         self.video_panel.clear()
+        self._loop_in = None
+        self._loop_out = None
+        self._loop_enabled = False
+        self._update_loop_ui()
         self.arrange_view.timeline = self.timeline
         self.arrange_view.selected_track_id = None
         self.arrange_view.refresh()
@@ -552,6 +717,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.transport.locate(0.0)
         self.arrange_view.set_playhead(0.0)
         self._sync_transport_time()
+        self._undo.reset(self.timeline)
         self._set_status("New project")
 
     def open_project(self) -> None:
@@ -574,6 +740,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.recorder = Recorder(self.timeline)
         self.transport = Transport(self.timeline)
         self._restore_video_from_project()
+        self._undo.reset(self.timeline)
         self._set_status(f"Opened {self.project_path.name}")
 
     def save_project(self, show_message: bool = True) -> None:

@@ -15,6 +15,14 @@ pip install -r requirements.txt
 python -m app.main
 ```
 
+**Optional ML isolation (Demucs):** heavier install (~2 GB with PyTorch):
+
+```bash
+pip install -r requirements-ml.txt
+```
+
+Then enable **ML separation (Demucs)** in the Channel Strip. Without it, HPSS heuristic isolation still works.
+
 **Requirements:** Python 3.10+, **FFmpeg** on PATH (or in `third_party/ffmpeg/`) for MP3/FLAC export, video import, and some audio formats.
 
 ---
@@ -23,85 +31,49 @@ python -m app.main
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  PICTURE LOCK  (ADR) — video preview + Import Video         │
+│  PICTURE LOCK  (ADR) — video preview, click to scrub        │
 ├─────────────────────────────────────────────────────────────┤
-│  Workflow hint bar (context tips for Podcast / ADR / …)     │
+│  Workflow hint bar                                          │
 ├──────────────────────────────┬──────────────────────────────┤
 │  Arrange view                │  Channel Strip               │
-│  • track lanes + waveforms   │  • Match EQ                  │
-│  • playhead, markers         │  • Noise print               │
-│  • arm (R) on track header   │  • Voice isolation           │
-│                              │  • Deverb / gate             │
+│  • waveforms + take lanes    │  • Match EQ + Picture Lock   │
+│  • loop region (orange)      │  • Noise print / Demucs ML   │
+│  • playhead, markers         │  • Deverb / gate             │
 ├──────────────────────────────┴──────────────────────────────┤
-│  Transport: Stop ■  Play ▶  Record ●  Arm  Blade  Marker   │
+│  Transport: ■ ▶ ● R  Blade Marker  [ ] ↻ P                  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 | Area | What it does |
 |------|----------------|
 | **Start screen** | Pick workflow (Podcast / Audiobook / **ADR**) and voice preset |
-| **Arrange view** | Timeline with waveforms; click to move playhead; Ctrl+wheel = zoom |
-| **Channel Strip** | Processing: EQ match, noise print, isolation, dynamics |
-| **Transport bar** | Play, record, arm, blade, marker — mirrors hotkeys |
-| **Picture Lock** | Video preview (ADR); syncs with playhead; muted (audio on timeline track) |
+| **Arrange view** | Timeline; click take lanes **A/B/C** to comp; loop region highlighted |
+| **Channel Strip** | Processing; **Use Picture Lock as Reference** for ADR Match EQ |
+| **Transport bar** | `[` loop in, `]` loop out, `\` toggle loop, **P** punch-in |
+| **Picture Lock** | Video preview; **click video** to move playhead |
+
+First launch shows a **Quick tour** (View → Quick Tour to replay).
 
 ---
 
 ## Workflows
 
 ### Podcast
-1. Select **Voice** track → **R** (arm) → **Record** (`*`) — ~5 s takes with preroll beeps  
-2. **Monitor Processed** to hear FX → **Export** (WAV/FLAC/MP3, −23 LUFS)
+1. Select **Voice** track → **R** (arm) → **Record** (`*`)
+2. **Monitor Processed** → **Export** (WAV/FLAC/MP3, −23 LUFS)
 
 ### Audiobook
-- Longer takes (~8 s), noise gate and deverb enabled by default  
-- **Blade (B)** to split clips · **L** to cycle take lanes
+- Longer takes, gate/deverb defaults
+- **Blade (B)** · click take lanes or **L** to cycle
 
 ### ADR (dub to picture)
-1. Start screen → **ADR — dub to picture** (preset **ADR / Dialog**)  
-2. **File → Import Video** (or button in Picture Lock panel)  
-3. Audio from video lands on **Picture Lock** track; video shows above timeline  
-4. Move playhead to a **noise-only** moment → **Capture @ Playhead** (Channel Strip)  
-5. Select **Dialog** track → arm → record while watching the picture  
-6. **Options → Set Reference** for Match EQ (optional) · **Export**
-
----
-
-## Audio I/O
-
-| Action | Formats |
-|--------|---------|
-| **Import audio** | WAV, FLAC, MP3, OGG, M4A, AAC (soundfile + FFmpeg fallback) |
-| **Import video** | MP4, MOV, MKV, AVI, WebM → extracts audio + preview |
-| **Export** | WAV, FLAC, MP3 (128–320 kbps CBR) |
-
-All exports: loudness **−23 LUFS**, true peak **≤ −1 dBTP**.
-
----
-
-## Processing (Channel Strip)
-
-| Control | Purpose |
-|---------|---------|
-| **Match** | Spectral EQ toward reference file (*Options → Set Reference*) |
-| **Capture @ Playhead** | Grab ~0.5 s noise sample for profile denoise |
-| **Reduce / Floor / Sens** | Noise print strength, floor, sensitivity |
-| **Isolate** | Pull voice out of music/foley beds (heuristic, not AI) |
-| **Tilt / Deverb** | Timbre and late-reflection cleanup |
-| **Bypass FX** | Raw signal for comparison |
-
-Presets: Male/Female Low/High + **ADR / Dialog**.
-
-Settings persist in `~/.vox/settings.json` (hotkeys, noise profile, window geometry).
-
----
-
-## Projects & autosave
-
-- Projects: `*.voxproj` (SQLite timeline + takes)  
-- **File → Save / Save As / Open**  
-- Autosave ring (default 5 slots, 300 s) — restore offered on launch  
-- Configure: **Options → Preferences**
+1. Start → **ADR — dub to picture**
+2. **Import Video** → click picture to scrub playhead
+3. Set loop **`[` / `]`**, toggle **`\\`**, rehearse line
+4. **Capture @ Playhead** on noise-only moment
+5. Arm **Dialog** → **P** punch-in (overwrites loop only) or **`*`** full take
+6. **Use Picture Lock as Reference** → Match EQ
+7. **Export**
 
 ---
 
@@ -111,70 +83,67 @@ Settings persist in `~/.vox/settings.json` (hotkeys, noise profile, window geome
 |--------|-----|
 | Play / Pause | Space |
 | Record | `*` |
+| Punch-in (loop region) | P |
 | Arm track | R |
-| Record all armed | Shift+R |
 | Blade | B |
 | Marker | M |
+| Loop in / out | `[` / `]` |
+| Toggle loop | `\` |
 | Cycle takes | L |
-| Zoom in / out | Z / X (also Ctrl+wheel) |
-| Save / Save As | Ctrl+S / Shift+S |
-| Open / New | Ctrl+O / Ctrl+N |
-| Import / Export | Ctrl+I / Ctrl+E |
-| Bypass / Monitor FX | Ctrl+B / Ctrl+T |
+| Undo / Redo | Ctrl+Z / Ctrl+Shift+Z |
+| Save / Export | Ctrl+S / Ctrl+E |
 
 Remap in **Options → Preferences → Hotkeys**.
 
 ---
 
-## FFmpeg
+## Processing (Channel Strip)
 
-Place binaries in `third_party/ffmpeg/` or set `FFMPEG_PATH` / PATH.
+| Control | Purpose |
+|---------|---------|
+| **Match** | Spectral EQ toward reference (*Options → Set Reference* or Picture Lock button) |
+| **Capture @ Playhead** | ~0.5 s noise sample for profile denoise |
+| **Isolate** | HPSS heuristic, or **Demucs ML** if `requirements-ml.txt` installed |
+| **Bypass FX** | Raw signal for comparison |
 
-Windows: `ffmpeg.exe`, `ffprobe.exe`  
-Linux/macOS: `ffmpeg`, `ffprobe`
+Presets: Male/Female Low/High + **ADR / Dialog**.
+
+Settings: `~/.vox/settings.json`
+
+---
+
+## Audio I/O
+
+| Action | Formats |
+|--------|---------|
+| **Import audio** | WAV, FLAC, MP3, OGG, M4A |
+| **Import video** | MP4, MOV, MKV, AVI, WebM |
+| **Export** | WAV, FLAC, MP3 (−23 LUFS, ≤ −1 dBTP) |
 
 ---
 
 ## Development
 
 ```bash
-pytest          # 16 tests
+pytest          # unit tests
 ```
 
 Key modules:
 
 | Path | Role |
 |------|------|
-| `app/ui/` | Logic-style shell, arrange view, transport |
-| `app/dsp/pipeline.py` | Unify DSP + match EQ + noise print |
-| `app/dsp/separation.py` | Voice isolation |
-| `app/audio/` | Record, playback, media import |
+| `app/ui/` | Shell, arrange view, transport, quick tour |
+| `app/timeline/undo.py` | Undo/redo stack |
+| `app/dsp/pipeline.py` | Unify DSP + match EQ + isolation |
+| `app/dsp/ml_separation.py` | Optional Demucs vocals |
+| `app/audio/` | Record, punch-in, playback |
 | `app/legacy/unify/` | Original UnifyAudio core |
-| `app/project/` | `.voxproj` database, autosave |
-
----
-
-## Roadmap (ideas for next iterations)
-
-Not all implemented yet — candidates for future work:
-
-| Idea | Why |
-|------|-----|
-| **Waveform scrubbing in video panel** | Click video to set playhead |
-| **Loop between markers** | ADR line rehearsal |
-| **Punch-in record** | Overwrite a time range only |
-| **Take comp lanes in UI** | Visual A/B/C lanes instead of L-cycle only |
-| **Reference from Picture Lock** | One-click “match dialog on screen” |
-| **ML voice separation** (e.g. Demucs) | Stronger isolation than HPSS heuristic |
-| **Undo stack** | Blade / record mistakes |
-| **In-app quick tour** | First-run tooltips |
-
-If something feels unintuitive — feedback welcome; the hint bar and ADR video placeholder are first UX steps.
 
 ---
 
 ## Credits
 
-- **Unify Audio** — `app/legacy/unify/` (used with permission)  
-- **FFmpeg** — [ffmpeg.org](https://ffmpeg.org/) (GPL/LGPL, not bundled)  
+- **Unify Audio** — `app/legacy/unify/`
+- **Demucs** (optional) — Meta AI, vocal separation
+- **FFmpeg** — [ffmpeg.org](https://ffmpeg.org/)
 - **PySide6**, **numpy**, **scipy**, **soundfile**, **pyloudnorm**

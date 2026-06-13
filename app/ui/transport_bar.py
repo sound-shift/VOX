@@ -13,6 +13,10 @@ class TransportBar(QtWidgets.QFrame):
     armClicked = QtCore.Signal()
     bladeClicked = QtCore.Signal()
     markerClicked = QtCore.Signal()
+    loopInClicked = QtCore.Signal()
+    loopOutClicked = QtCore.Signal()
+    loopToggleClicked = QtCore.Signal()
+    punchClicked = QtCore.Signal()
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -46,7 +50,22 @@ class TransportBar(QtWidgets.QFrame):
         self.btn_arm = self._make_btn("R", "Arm track", palette.BG_RAISED, checkable=True)
         self.btn_blade = self._make_btn("⌇", "Blade", palette.BG_RAISED)
         self.btn_marker = self._make_btn("M", "Marker", palette.BG_RAISED)
-        for btn in (self.btn_stop, self.btn_play, self.btn_record, self.btn_arm, self.btn_blade, self.btn_marker):
+        self.btn_loop_in = self._make_btn("[", "Loop in @ playhead", palette.BG_RAISED)
+        self.btn_loop_out = self._make_btn("]", "Loop out @ playhead", palette.BG_RAISED)
+        self.btn_loop = self._make_btn("↻", "Toggle loop", palette.BG_RAISED, checkable=True)
+        self.btn_punch = self._make_btn("P", "Punch-in record (loop region)", palette.BG_RAISED)
+        for btn in (
+            self.btn_stop,
+            self.btn_play,
+            self.btn_record,
+            self.btn_arm,
+            self.btn_blade,
+            self.btn_marker,
+            self.btn_loop_in,
+            self.btn_loop_out,
+            self.btn_loop,
+            self.btn_punch,
+        ):
             center.addWidget(btn)
         layout.addLayout(center)
         layout.addStretch(1)
@@ -61,6 +80,10 @@ class TransportBar(QtWidgets.QFrame):
         self.btn_arm.clicked.connect(self.armClicked.emit)
         self.btn_blade.clicked.connect(self.bladeClicked.emit)
         self.btn_marker.clicked.connect(self.markerClicked.emit)
+        self.btn_loop_in.clicked.connect(self.loopInClicked.emit)
+        self.btn_loop_out.clicked.connect(self.loopOutClicked.emit)
+        self.btn_loop.clicked.connect(self.loopToggleClicked.emit)
+        self.btn_punch.clicked.connect(self.punchClicked.emit)
 
     def _make_btn(self, text: str, tooltip: str, color: str, *, dark_text: bool = False, checkable: bool = False) -> QtWidgets.QPushButton:
         btn = QtWidgets.QPushButton(text)
@@ -94,6 +117,15 @@ class TransportBar(QtWidgets.QFrame):
 
     def set_armed(self, armed: bool) -> None:
         self.btn_arm.setChecked(armed)
+
+    def set_loop_enabled(self, enabled: bool) -> None:
+        self.btn_loop.setChecked(enabled)
+
+    def set_loop_region(self, loop_in: float | None, loop_out: float | None) -> None:
+        if loop_in is not None and loop_out is not None:
+            self.btn_loop.setToolTip(f"Loop {loop_in:.1f}s – {loop_out:.1f}s (toggle)")
+        else:
+            self.btn_loop.setToolTip("Toggle loop (set [ and ] first)")
 
 
 __all__ = ["TransportBar"]

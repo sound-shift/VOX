@@ -33,6 +33,7 @@ class ArrangeCanvas(QtWidgets.QWidget):
     trackSelected = QtCore.Signal(int)
     playheadMoved = QtCore.Signal(float)
     armToggled = QtCore.Signal(int)
+    takeSelected = QtCore.Signal(int, int)
 
     def __init__(self, timeline: Timeline, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -40,6 +41,8 @@ class ArrangeCanvas(QtWidgets.QWidget):
         self.selected_track_id: Optional[int] = None
         self.playhead_sec = 0.0
         self.pps = DEFAULT_PPSS
+        self.loop_in: Optional[float] = None
+        self.loop_out: Optional[float] = None
         self.setMouseTracking(True)
         self._recompute_size()
 
@@ -56,6 +59,11 @@ class ArrangeCanvas(QtWidgets.QWidget):
     def set_zoom(self, delta: float) -> None:
         self.pps = float(max(MIN_PPSS, min(MAX_PPSS, self.pps + delta)))
         self._recompute_size()
+        self.update()
+
+    def set_loop_region(self, loop_in: Optional[float], loop_out: Optional[float]) -> None:
+        self.loop_in = loop_in
+        self.loop_out = loop_out
         self.update()
 
     def _content_duration(self) -> float:
@@ -83,6 +91,29 @@ class ArrangeCanvas(QtWidgets.QWidget):
 
     def _sec_at_x(self, x: float) -> float:
         return max(0.0, (x - TRACK_HEADER_W) / self.pps)
+
+    def _clip_hit(self, x: float, y: float) -> tuple[Optional[int], Optional[int]]:
+        """Return (clip_id, take_id) if click hits a take lane."""
+        track = self._track_at_y(y)
+        if track is None or x < TRACK_HEADER_W:
+            return None, None
+        sec = self._sec_at_x(x)
+        tracks = list(self.timeline.tracks.values())
+        idx = tracks.index(track)
+        y0 = RULER_H + idx * TRACK_H
+        rel_y = y - (y0 + 8)
+        lane_h = TRACK_H - 16
+
+        for clip in track.clips:
+            if not (clip.start <= sec < clip.end):
+                continue
+            take_count = max(1, len(clip.takes))
+            lane_step = lane_h / take_count
+            lane_idx = min(take_count - 1, max(0, int(rel_y / max(1.0, lane_step))))
+            if 0 <= lane_idx < len(clip.takes):
+                return clip.id, clip.takes[lane_idx].id
+            return clip.id, None
+        return None, None
 
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:  # noqa: N802
         painter = QtGui.QPainter(self)
@@ -142,29 +173,69 @@ class ArrangeCanvas(QtWidgets.QWidget):
             painter.drawText(56, y0 + 46, f"{len(track.clips)} clip(s)")
 
             for clip in track.clips:
-                take = clip.active_take()
-                if take is None or not take.data:
-                    continue
                 x_start = TRACK_HEADER_W + clip.start * self.pps
                 clip_w = max(8.0, (clip.end - clip.start) * self.pps)
                 clip_rect = QtCore.QRectF(x_start, y0 + 8, clip_w, TRACK_H - 16)
-                wave_color = palette.WAVE_ARMED if track.armed else palette.WAVE_FILL
-                painter.setPen(QtCore.Qt.PenStyle.NoPen)
-                painter.setBrush(palette.qcolor(wave_color if selected else palette.WAVE_FILL_DIM))
-                painter.setOpacity(0.22)
-                painter.drawRoundedRect(clip_rect, 4, 4)
-                painter.setOpacity(1.0)
+                takes = clip.takes if clip.takes else []
+                take_count = max(1, len(takes))
+                lane_h = clip_rect.height() / take_count
 
-                inner = clip_rect.adjusted(2, 2, -2, -2)
-                peaks = _downsample_waveform(take.data, max(1, int(inner.width())))
-                if peaks:
-                    mid = inner.center().y()
-                    max_h = inner.height() / 2 - 2
-                    painter.setPen(QtGui.QPen(palette.qcolor(wave_color if selected else palette.WAVE_FILL_DIM), 1))
-                    for i, peak in enumerate(peaks):
-                        px = inner.left() + i
-                        h = peak * max_h
-                        painter.drawLine(int(px), int(mid - h), int(px), int(mid + h))
+                for lane_idx, take in enumerate(takes if takes else [None]):
+                    if take is None or not take.data:
+                        continue
+                    lane_rect = QtCore.QRectF(
+                        clip_rect.x(),
+                        clip_rect.y() + lane_idx * lane_h,
+                        clip_rect.width(),
+                        lane_h - 1,
+                    )
+                    is_active = take.active
+                    wave_color = palette.WAVE_ARMED if track.armed else palette.WAVE_FILL
+                    fill = palette.WAVE_FILL_DIM if not is_active else (wave_color if selected else palette.WAVE_FILL_DIM)
+                    painter.setPen(QtCore.Qt.PenStyle.NoPen)
+                    painter.setBrush(palette.qcolor(fill))
+                    painter.setOpacity(0.35 if is_active else 0.15)
+                    painter.drawRoundedRect(lane_rect, 3, 3)
+                    painter.setOpacity(1.0)
+
+                    if take_count > 1:
+                        painter.setPen(palette.qcolor(palette.TEXT_DIM))
+                        painter.setFont(QtGui.QFont("Segoe UI", 7, QtGui.QFont.Weight.Bold))
+                        label = chr(ord("A") + lane_idx)
+                        painter.drawText(int(lane_rect.x()) + 3, int(lane_rect.y()) + 10, label)
+
+                    inner = lane_rect.adjusted(2, 2, -2, -2)
+                    peaks = _downsample_waveform(take.data, max(1, int(inner.width())))
+                    if peaks:
+                        mid = inner.center().y()
+                        max_h = max(2.0, inner.height() / 2 - 2)
+                        pen_color = wave_color if is_active else palette.WAVE_FILL_DIM
+                        painter.setPen(QtGui.QPen(palette.qcolor(pen_color), 1))
+                        for i, peak in enumerate(peaks):
+                            px = inner.left() + i
+                            h = peak * max_h
+                            painter.drawLine(int(px), int(mid - h), int(px), int(mid + h))
+
+                if not takes:
+                    painter.setPen(QtCore.Qt.PenStyle.NoPen)
+                    painter.setBrush(palette.qcolor(palette.WAVE_FILL_DIM))
+                    painter.setOpacity(0.12)
+                    painter.drawRoundedRect(clip_rect, 4, 4)
+                    painter.setOpacity(1.0)
+
+        if self.loop_in is not None and self.loop_out is not None and self.loop_out > self.loop_in:
+            lx0 = TRACK_HEADER_W + self.loop_in * self.pps
+            lx1 = TRACK_HEADER_W + self.loop_out * self.pps
+            painter.fillRect(
+                int(lx0),
+                RULER_H,
+                int(lx1 - lx0),
+                rect.height() - RULER_H,
+                QtGui.QColor(255, 180, 60, 28),
+            )
+            painter.setPen(QtGui.QPen(palette.qcolor(palette.ACCENT_ORANGE), 1))
+            painter.drawLine(int(lx0), RULER_H, int(lx0), rect.height())
+            painter.drawLine(int(lx1), RULER_H, int(lx1), rect.height())
 
         painter.setPen(QtGui.QPen(palette.qcolor(palette.ACCENT_VIOLET), 1, QtCore.Qt.PenStyle.DashLine))
         for marker in self.timeline.markers.values():
@@ -205,6 +276,9 @@ class ArrangeCanvas(QtWidgets.QWidget):
             return
 
         sec = self._sec_at_x(x)
+        clip_id, take_id = self._clip_hit(x, y)
+        if clip_id is not None and take_id is not None:
+            self.takeSelected.emit(clip_id, take_id)
         self.playhead_sec = sec
         self.playheadMoved.emit(sec)
         track = self._track_at_y(y)
@@ -228,6 +302,7 @@ class ArrangeView(QtWidgets.QScrollArea):
     trackSelected = QtCore.Signal(int)
     playheadMoved = QtCore.Signal(float)
     armToggled = QtCore.Signal(int)
+    takeSelected = QtCore.Signal(int, int)
 
     def __init__(self, timeline: Timeline, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -242,6 +317,7 @@ class ArrangeView(QtWidgets.QScrollArea):
         self.canvas.trackSelected.connect(self._on_track_selected)
         self.canvas.playheadMoved.connect(self.playheadMoved.emit)
         self.canvas.armToggled.connect(self.armToggled.emit)
+        self.canvas.takeSelected.connect(self.takeSelected.emit)
 
     def _on_track_selected(self, track_id: int) -> None:
         self.selected_track_id = track_id
@@ -258,6 +334,9 @@ class ArrangeView(QtWidgets.QScrollArea):
 
     def set_zoom(self, delta: float) -> None:
         self.canvas.set_zoom(delta)
+
+    def set_loop_region(self, loop_in: Optional[float], loop_out: Optional[float]) -> None:
+        self.canvas.set_loop_region(loop_in, loop_out)
 
 
 __all__ = ["ArrangeView", "DEFAULT_PPSS"]

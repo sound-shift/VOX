@@ -13,6 +13,7 @@ class VideoPanel(QtWidgets.QFrame):
     """Picture lock preview synced with transport."""
 
     importRequested = QtCore.Signal()
+    seekRequested = QtCore.Signal(float)
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -89,6 +90,8 @@ class VideoPanel(QtWidgets.QFrame):
                 QtWidgets.QSizePolicy.Policy.Expanding,
             )
             self._video_widget.setStyleSheet(f"background: #000; border-radius: 6px;")
+            self._video_widget.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+            self._video_widget.installEventFilter(self)
             video_layout.addWidget(self._video_widget)
             self._player = QMediaPlayer(self)
             self._audio = QAudioOutput(self)
@@ -159,6 +162,17 @@ class VideoPanel(QtWidgets.QFrame):
     def set_muted(self, muted: bool) -> None:
         if self._player is not None and hasattr(self, "_audio"):
             self._audio.setMuted(muted)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if obj is getattr(self, "_video_widget", None) and event.type() == QtCore.QEvent.Type.MouseButtonPress:
+            if self._player is not None and self._path is not None:
+                duration_ms = self._player.duration()
+                if duration_ms > 0:
+                    frac = event.position().x() / max(1.0, self._video_widget.width())
+                    sec = max(0.0, min(duration_ms / 1000.0, frac * duration_ms / 1000.0))
+                    self.seekRequested.emit(sec)
+                    return True
+        return super().eventFilter(obj, event)
 
     @property
     def path(self) -> Optional[Path]:

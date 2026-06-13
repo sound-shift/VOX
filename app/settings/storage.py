@@ -13,7 +13,7 @@ DEFAULT_SETTINGS = {
         "reference_file": None,
         "noise_profile": None,
     },
-    "ui": {"geometry": None},
+    "ui": {"geometry": None, "tour_completed": False},
 }
 
 DEFAULT_HOTKEYS = {
@@ -34,6 +34,12 @@ DEFAULT_HOTKEYS = {
     "import": "Ctrl+I",
     "bypass_processing": "Ctrl+B",
     "monitor_processed": "Ctrl+T",
+    "undo": "Ctrl+Z",
+    "redo": "Ctrl+Shift+Z",
+    "loop_in": "[",
+    "loop_out": "]",
+    "toggle_loop": "\\",
+    "punch_record": "P",
 }
 
 

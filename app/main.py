@@ -11,6 +11,7 @@ from app.settings.storage import SettingsStorage
 from app.ui.main_window import MainWindow
 from app.ui.palette import TRACK_COLORS
 from app.ui.start_screen import StartScreen
+from app.ui.quick_tour import maybe_show_tour
 from app.ui.theme import ThemeManager
 
 
@@ -46,6 +47,7 @@ def main() -> int:
             pass
 
     window.show()
+    maybe_show_tour(settings, window)
     exit_code = app.exec()
 
     settings.set_option("ui", "geometry", bytes(window.saveGeometry().toHex()).decode("ascii"))

@@ -26,6 +26,7 @@ class ProcessState:
     use_noise_profile: bool = True
     gate_enable: bool = False
     tilt_db_per_oct: float = -1.5
+    use_ml_isolation: bool = False
 
 
 class ProcessPanel(QtWidgets.QWidget):
@@ -34,6 +35,7 @@ class ProcessPanel(QtWidgets.QWidget):
     resetRequested = QtCore.Signal()
     processingChanged = QtCore.Signal()
     captureNoiseRequested = QtCore.Signal()
+    pictureLockReferenceRequested = QtCore.Signal()
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -65,6 +67,9 @@ class ProcessPanel(QtWidgets.QWidget):
         self.knob_match = Knob("Match", 0.0, 100.0, 1.0, "%", 100.0)
         self.knob_match.setFixedWidth(120)
         eq_layout.addWidget(self.knob_match, alignment=QtCore.Qt.AlignmentFlag.AlignHCenter)
+        self.btn_picture_ref = QtWidgets.QPushButton("Use Picture Lock as Reference")
+        self.btn_picture_ref.setToolTip("ADR: match dialog EQ to on-screen audio")
+        eq_layout.addWidget(self.btn_picture_ref)
         layout.addWidget(eq_group)
 
         noise_group = QtWidgets.QGroupBox("Noise Print")
@@ -94,6 +99,14 @@ class ProcessPanel(QtWidgets.QWidget):
         self.knob_isolation = Knob("Isolate", 0.0, 100.0, 1.0, "%", 0.0)
         self.knob_isolation.setFixedWidth(120)
         iso_layout.addWidget(self.knob_isolation, alignment=QtCore.Qt.AlignmentFlag.AlignHCenter)
+        from app.dsp.ml_separation import demucs_available, demucs_status_message
+
+        self.chk_ml = QtWidgets.QCheckBox("ML separation (Demucs)")
+        self.chk_ml.setToolTip(demucs_status_message())
+        self.chk_ml.setEnabled(demucs_available())
+        if not demucs_available():
+            self.chk_ml.setText("ML (install requirements-ml.txt)")
+        iso_layout.addWidget(self.chk_ml)
         layout.addWidget(iso_group)
 
         proc_group = QtWidgets.QGroupBox("Dynamics")
@@ -131,6 +144,7 @@ class ProcessPanel(QtWidgets.QWidget):
         self.btn_bypass.toggled.connect(self.bypassToggled.emit)
         self.btn_reset.clicked.connect(self.resetRequested.emit)
         self.btn_capture_noise.clicked.connect(self.captureNoiseRequested.emit)
+        self.btn_picture_ref.clicked.connect(self.pictureLockReferenceRequested.emit)
         for knob in (
             self.knob_match,
             self.knob_isolation,
@@ -143,6 +157,7 @@ class ProcessPanel(QtWidgets.QWidget):
             knob.valueChanged.connect(self._emit_processing_changed)
         self.chk_gate.toggled.connect(self._emit_processing_changed)
         self.chk_use_profile.toggled.connect(self._emit_processing_changed)
+        self.chk_ml.toggled.connect(self._emit_processing_changed)
 
     def _emit_processing_changed(self) -> None:
         self.processingChanged.emit()
@@ -196,6 +211,7 @@ class ProcessPanel(QtWidgets.QWidget):
             use_noise_profile=self.chk_use_profile.isChecked(),
             gate_enable=self.chk_gate.isChecked(),
             tilt_db_per_oct=self.knob_tilt.value(),
+            use_ml_isolation=self.chk_ml.isChecked() and self.chk_ml.isEnabled(),
         )
 
     def state(self) -> ProcessState:

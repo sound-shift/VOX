@@ -181,5 +181,22 @@ class Timeline:
                 return next_id
         return None
 
+    def set_active_take(self, clip_id: int, take_id: int) -> bool:
+        for track in self.tracks.values():
+            for clip in track.clips:
+                if clip.id == clip_id:
+                    if any(t.id == take_id for t in clip.takes):
+                        clip.set_active_take(take_id)
+                        return True
+                    return False
+        return False
+
+    def find_clip(self, clip_id: int) -> Optional[Clip]:
+        for track in self.tracks.values():
+            for clip in track.clips:
+                if clip.id == clip_id:
+                    return clip
+        return None
+
 
 __all__ = ["Timeline", "Track", "Clip", "Take", "Marker"]

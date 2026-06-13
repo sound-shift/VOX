@@ -1,0 +1,4 @@
+# Optional — ML voice separation (Demucs). Heavy (~2 GB with PyTorch).
+# pip install -r requirements-ml.txt
+torch>=2.1
+demucs>=4.0
